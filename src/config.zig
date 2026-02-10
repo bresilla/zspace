@@ -14,12 +14,28 @@ pub const IsolationOptions = struct {
     ipc: bool = true,
 };
 
+pub const EnvironmentEntry = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
+pub const ProcessOptions = struct {
+    chdir: ?[]const u8 = null,
+    argv0: ?[]const u8 = null,
+    clear_env: bool = false,
+    set_env: []const EnvironmentEntry = &.{},
+    unset_env: []const []const u8 = &.{},
+    new_session: bool = false,
+    die_with_parent: bool = false,
+};
+
 pub const JailConfig = struct {
     name: []const u8,
     rootfs_path: []const u8,
     cmd: []const []const u8,
     resources: ResourceLimits = .{},
     isolation: IsolationOptions = .{},
+    process: ProcessOptions = .{},
 };
 
 pub const ShellConfig = struct {
@@ -29,6 +45,7 @@ pub const ShellConfig = struct {
     shell_args: []const []const u8 = &.{},
     resources: ResourceLimits = .{},
     isolation: IsolationOptions = .{},
+    process: ProcessOptions = .{},
 };
 
 pub const RunOutcome = struct {

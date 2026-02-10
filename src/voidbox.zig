@@ -8,6 +8,8 @@ pub const JailConfig = config.JailConfig;
 pub const ShellConfig = config.ShellConfig;
 pub const IsolationOptions = config.IsolationOptions;
 pub const ResourceLimits = config.ResourceLimits;
+pub const ProcessOptions = config.ProcessOptions;
+pub const EnvironmentEntry = config.EnvironmentEntry;
 pub const RunOutcome = config.RunOutcome;
 pub const default_shell_config = config.default_shell_config;
 pub const DoctorReport = doctor.DoctorReport;
@@ -38,6 +40,7 @@ pub fn launch_shell(shell_config: ShellConfig, allocator: std.mem.Allocator) !Ru
         .cmd = cmd,
         .resources = shell_config.resources,
         .isolation = shell_config.isolation,
+        .process = shell_config.process,
     };
 
     return launch(jail_config, allocator);

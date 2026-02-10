@@ -8,6 +8,7 @@ const Cgroup = @import("cgroup.zig");
 const Fs = @import("fs.zig");
 const JailConfig = @import("config.zig").JailConfig;
 const IsolationOptions = @import("config.zig").IsolationOptions;
+const ProcessOptions = @import("config.zig").ProcessOptions;
 
 const ChildProcessArgs = struct {
     container: *Container,
@@ -20,6 +21,7 @@ const Container = @This();
 name: []const u8,
 cmd: []const []const u8,
 isolation: IsolationOptions,
+process: ProcessOptions,
 
 fs: Fs,
 net: ?Net,
@@ -32,6 +34,7 @@ pub fn init(run_args: JailConfig, allocator: std.mem.Allocator) !Container {
         .fs = Fs.init(run_args.rootfs_path),
         .cmd = run_args.cmd,
         .isolation = run_args.isolation,
+        .process = run_args.process,
         .net = if (run_args.isolation.net) try Net.init(allocator, run_args.name) else null,
         .allocator = allocator,
         .cgroup = try Cgroup.init(run_args.name, run_args.resources, allocator),
@@ -106,13 +109,47 @@ fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t) !void {
     try checkErr(linux.setreuid(uid, uid), error.UID);
     try checkErr(linux.setregid(gid, gid), error.GID);
 
+    if (self.process.new_session) {
+        _ = std.posix.setsid() catch return error.SetSidFailed;
+    }
+    if (self.process.die_with_parent) {
+        try checkErr(linux.prctl(@intFromEnum(linux.PR.SET_PDEATHSIG), @as(usize, @intCast(c.SIGKILL)), 0, 0, 0), error.PrctlFailed);
+    }
+
     self.sethostname();
     try self.fs.setup(self.isolation.mount);
+    if (self.process.chdir) |target| {
+        std.posix.chdir(target) catch return error.ChdirFailed;
+    }
     if (self.net) |*net| {
         try net.setupContainerVethIf();
     }
 
-    std.process.execv(self.allocator, self.cmd) catch return error.CmdFailed;
+    var exec_cmd = self.cmd;
+    var owns_exec_cmd = false;
+    if (self.process.argv0) |argv0| {
+        const cmd_copy = try self.allocator.alloc([]const u8, self.cmd.len);
+        @memcpy(cmd_copy, self.cmd);
+        cmd_copy[0] = argv0;
+        exec_cmd = cmd_copy;
+        owns_exec_cmd = true;
+    }
+    defer if (owns_exec_cmd) self.allocator.free(exec_cmd);
+
+    var env_map = if (self.process.clear_env)
+        std.process.EnvMap.init(self.allocator)
+    else
+        try std.process.getEnvMap(self.allocator);
+    defer env_map.deinit();
+
+    for (self.process.unset_env) |key| {
+        env_map.remove(key);
+    }
+    for (self.process.set_env) |entry| {
+        try env_map.put(entry.key, entry.value);
+    }
+
+    std.process.execve(self.allocator, exec_cmd, &env_map) catch return error.CmdFailed;
 }
 
 export fn childFn(a: usize) u8 {
