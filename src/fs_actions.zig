@@ -25,7 +25,37 @@ pub fn execute(actions: []const FsAction) !void {
                 try mountPath(mount_pair.src, mount_pair.dest, null, flags, null, error.BindMount);
                 try mounted_targets.append(std.heap.page_allocator, .{ .path = mount_pair.dest });
             },
+            .bind_try => |mount_pair| {
+                if (!sourceExists(mount_pair.src)) continue;
+                try ensurePath(mount_pair.dest);
+                const flags = linux.MS.BIND | linux.MS.REC;
+                try mountPath(mount_pair.src, mount_pair.dest, null, flags, null, error.BindMount);
+                try mounted_targets.append(std.heap.page_allocator, .{ .path = mount_pair.dest });
+            },
+            .dev_bind => |mount_pair| {
+                try ensurePath(mount_pair.dest);
+                const flags = linux.MS.BIND | linux.MS.REC;
+                try mountPath(mount_pair.src, mount_pair.dest, null, flags, null, error.BindMount);
+                try mounted_targets.append(std.heap.page_allocator, .{ .path = mount_pair.dest });
+            },
+            .dev_bind_try => |mount_pair| {
+                if (!sourceExists(mount_pair.src)) continue;
+                try ensurePath(mount_pair.dest);
+                const flags = linux.MS.BIND | linux.MS.REC;
+                try mountPath(mount_pair.src, mount_pair.dest, null, flags, null, error.BindMount);
+                try mounted_targets.append(std.heap.page_allocator, .{ .path = mount_pair.dest });
+            },
             .ro_bind => |mount_pair| {
+                try ensurePath(mount_pair.dest);
+                const bind_flags = linux.MS.BIND | linux.MS.REC;
+                try mountPath(mount_pair.src, mount_pair.dest, null, bind_flags, null, error.BindMount);
+                try mounted_targets.append(std.heap.page_allocator, .{ .path = mount_pair.dest });
+
+                const remount_flags = linux.MS.BIND | linux.MS.REMOUNT | linux.MS.RDONLY;
+                try mountPath(null, mount_pair.dest, null, remount_flags, null, error.RemountReadOnly);
+            },
+            .ro_bind_try => |mount_pair| {
+                if (!sourceExists(mount_pair.src)) continue;
                 try ensurePath(mount_pair.dest);
                 const bind_flags = linux.MS.BIND | linux.MS.REC;
                 try mountPath(mount_pair.src, mount_pair.dest, null, bind_flags, null, error.BindMount);
@@ -42,6 +72,11 @@ pub fn execute(actions: []const FsAction) !void {
             .dev => |dest| {
                 try ensurePath(dest);
                 try mountPath("devtmpfs", dest, "devtmpfs", 0, null, error.MountDevTmpFs);
+                try mounted_targets.append(std.heap.page_allocator, .{ .path = dest });
+            },
+            .mqueue => |dest| {
+                try ensurePath(dest);
+                try mountPath("mqueue", dest, "mqueue", 0, null, error.MountMqueue);
                 try mounted_targets.append(std.heap.page_allocator, .{ .path = dest });
             },
             .tmpfs => |tmpfs| {
@@ -191,6 +226,11 @@ fn findOverlaySource(sources: []const OverlaySource, key: []const u8) ?[]const u
     return null;
 }
 
+fn sourceExists(path: []const u8) bool {
+    std.posix.access(path, std.posix.F_OK) catch return false;
+    return true;
+}
+
 fn formatTmpfsOpts(buffer: []u8, tmpfs: @import("config.zig").TmpfsMount) ![]const u8 {
     if (tmpfs.size_bytes) |size| {
         if (tmpfs.mode) |mode| {
@@ -263,4 +303,9 @@ test "findOverlaySource resolves source by key" {
 
     try std.testing.expectEqualStrings("/layers/dev", findOverlaySource(&sources, "dev").?);
     try std.testing.expect(findOverlaySource(&sources, "none") == null);
+}
+
+test "sourceExists handles existing and missing paths" {
+    try std.testing.expect(sourceExists("/"));
+    try std.testing.expect(!sourceExists("/definitely/not/a/real/path"));
 }

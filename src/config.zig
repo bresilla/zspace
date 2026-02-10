@@ -91,9 +91,14 @@ pub const FileAction = struct {
 
 pub const FsAction = union(enum) {
     bind: MountPair,
+    bind_try: MountPair,
+    dev_bind: MountPair,
+    dev_bind_try: MountPair,
     ro_bind: MountPair,
+    ro_bind_try: MountPair,
     proc: []const u8,
     dev: []const u8,
+    mqueue: []const u8,
     tmpfs: TmpfsMount,
     dir: DirAction,
     symlink: SymlinkAction,

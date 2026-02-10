@@ -198,7 +198,23 @@ fn validateFsAction(action: FsAction) !void {
             if (pair.src.len == 0) return error.InvalidFsSource;
             if (pair.dest.len == 0) return error.InvalidFsDestination;
         },
+        .bind_try => |pair| {
+            if (pair.src.len == 0) return error.InvalidFsSource;
+            if (pair.dest.len == 0) return error.InvalidFsDestination;
+        },
+        .dev_bind => |pair| {
+            if (pair.src.len == 0) return error.InvalidFsSource;
+            if (pair.dest.len == 0) return error.InvalidFsDestination;
+        },
+        .dev_bind_try => |pair| {
+            if (pair.src.len == 0) return error.InvalidFsSource;
+            if (pair.dest.len == 0) return error.InvalidFsDestination;
+        },
         .ro_bind => |pair| {
+            if (pair.src.len == 0) return error.InvalidFsSource;
+            if (pair.dest.len == 0) return error.InvalidFsDestination;
+        },
+        .ro_bind_try => |pair| {
             if (pair.src.len == 0) return error.InvalidFsSource;
             if (pair.dest.len == 0) return error.InvalidFsDestination;
         },
@@ -206,6 +222,9 @@ fn validateFsAction(action: FsAction) !void {
             if (dest.len == 0) return error.InvalidFsDestination;
         },
         .dev => |dest| {
+            if (dest.len == 0) return error.InvalidFsDestination;
+        },
+        .mqueue => |dest| {
             if (dest.len == 0) return error.InvalidFsDestination;
         },
         .tmpfs => |tmpfs| {
@@ -374,6 +393,17 @@ test "validate rejects malformed fs action" {
         .rootfs_path = "/tmp/rootfs",
         .cmd = &.{"/bin/sh"},
         .fs_actions = &.{.{ .bind = .{ .src = "", .dest = "/x" } }},
+    };
+
+    try std.testing.expectError(error.InvalidFsSource, validate(cfg));
+}
+
+test "validate rejects malformed try-bind fs action" {
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .fs_actions = &.{.{ .bind_try = .{ .src = "", .dest = "/x" } }},
     };
 
     try std.testing.expectError(error.InvalidFsSource, validate(cfg));
