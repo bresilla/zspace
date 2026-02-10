@@ -34,8 +34,8 @@ pub fn attach(namespace_fds: NamespaceFds) !void {
     if (namespace_fds.ipc) |fd| {
         try attachNamespaceFd(fd, linux.CLONE.NEWIPC);
     }
-    if (namespace_fds.pid != null) {
-        return error.NamespaceAttachNotSupported;
+    if (namespace_fds.pid) |fd| {
+        try attachNamespaceFd(fd, linux.CLONE.NEWPID);
     }
 }
 
