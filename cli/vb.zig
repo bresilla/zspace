@@ -14,12 +14,12 @@ pub fn main() !void {
     const argv = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, argv);
 
-    if (argv.len >= 2 and std.mem.eql(u8, argv[1], "doctor")) {
-        try runDoctor(allocator, argv[2..]);
-        return;
-    }
-
     const parsed = parseBwrapArgs(allocator, argv[1..]) catch |err| {
+        if (err == error.HelpRequested) {
+            try printUsage();
+            std.posix.exit(0);
+        }
+
         try printCliError(err);
         try printUsage();
         std.posix.exit(2);
@@ -33,39 +33,10 @@ pub fn main() !void {
 
     const outcome = voidbox.launch(parsed.cfg, allocator) catch |err| {
         std.debug.print("launch failed: {s}\n", .{@errorName(err)});
-        std.debug.print("hint: run `vb doctor` for host diagnostics\n", .{});
+        std.debug.print("hint: verify required namespaces/capabilities are available on this host\n", .{});
         std.posix.exit(1);
     };
     std.posix.exit(outcome.exit_code);
-}
-
-fn runDoctor(allocator: std.mem.Allocator, args: []const []const u8) !void {
-    var as_json = false;
-    var strict = false;
-
-    for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--json")) {
-            as_json = true;
-        } else if (std.mem.eql(u8, arg, "--strict")) {
-            strict = true;
-        } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            std.debug.print("usage: vb doctor [--json] [--strict]\n", .{});
-            return;
-        } else {
-            return error.UnknownOption;
-        }
-    }
-
-    const report = try voidbox.check_host(allocator);
-    const out = std.fs.File.stdout().deprecatedWriter();
-    if (as_json) {
-        try report.printJson(out);
-    } else {
-        try report.print(out);
-    }
-    if (strict and !report.strictReady()) {
-        std.posix.exit(1);
-    }
 }
 
 fn parseBwrapArgs(allocator: std.mem.Allocator, raw: []const []const u8) !Parsed {
@@ -131,7 +102,7 @@ fn parseBwrapArgs(allocator: std.mem.Allocator, raw: []const []const u8) !Parsed
             break;
         }
 
-        if (std.mem.eql(u8, arg, "--help")) return error.HelpRequested;
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) return error.HelpRequested;
         if (std.mem.eql(u8, arg, "--version")) {
             std.debug.print("vb 0.0.1\n", .{});
             std.posix.exit(0);
@@ -505,25 +476,74 @@ fn printCliError(err: anyerror) !void {
 }
 
 fn printUsage() !void {
-    const out = std.fs.File.stderr().deprecatedWriter();
-    try out.writeAll(
-        "usage: vb [OPTION...] [--] COMMAND [ARG...]\n" ++
-            "       vb doctor [--json] [--strict]\n" ++
-            "\n" ++
-            "bubblewrap-compatible options (implemented):\n" ++
-            "  --unshare-{user,ipc,pid,net,uts,cgroup}, --unshare-all, --share-net\n" ++
-            "  --userns FD --userns2 FD --pidns FD --uid UID --gid GID --hostname HOST\n" ++
-            "  --chdir DIR --setenv VAR VALUE --unsetenv VAR --clearenv --argv0 VALUE\n" ++
-            "  --sync-fd FD --lock-file PATH --block-fd FD --userns-block-fd FD\n" ++
-            "  --info-fd FD --json-status-fd FD --new-session --die-with-parent --as-pid-1\n" ++
-            "  --cap-add CAP --cap-drop CAP --seccomp FD --add-seccomp-fd FD\n" ++
-            "  --perms OCTAL --size BYTES\n" ++
-            "  --bind SRC DEST --bind-try SRC DEST --dev-bind SRC DEST --dev-bind-try SRC DEST\n" ++
-            "  --ro-bind SRC DEST --ro-bind-try SRC DEST --remount-ro DEST\n" ++
-            "  --proc DEST --dev DEST --tmpfs DEST --mqueue DEST --dir DEST\n" ++
-            "  --file FD DEST --bind-data FD DEST --ro-bind-data FD DEST\n" ++
-            "  --symlink SRC DEST --chmod OCTAL PATH\n" ++
-            "  --overlay-src SRC --overlay RWSRC WORKDIR DEST --tmp-overlay DEST --ro-overlay DEST\n" ++
-            "  --help --version\n\n",
-    );
+    const out = std.fs.File.stdout().deprecatedWriter();
+
+    const color = shouldUseColor();
+    const reset = if (color) "\x1b[0m" else "";
+    const title = if (color) "\x1b[96m" else "";
+    const section = if (color) "\x1b[94m" else "";
+    const option = if (color) "\x1b[93m" else "";
+    const dim = if (color) "\x1b[37m" else "";
+
+    try out.print("{s}voidbox cli{s}\n", .{ title, reset });
+    try out.print("{s}usage{s}  vb [OPTION...] [--] COMMAND [ARG...]\n\n", .{ section, reset });
+
+    try out.print("{s}General{s}\n", .{ section, reset });
+    try out.print("  {s}--help{s}                   Show this help\n", .{ option, reset });
+    try out.print("  {s}--version{s}                Print version\n", .{ option, reset });
+    try out.print("  {s}--args{s} FD                Parse nul-separated args from FD (placeholder)\n", .{ option, reset });
+    try out.print("  {s}--level-prefix{s}           Accepted for compatibility\n\n", .{ option, reset });
+
+    try out.print("{s}Namespaces{s}\n", .{ section, reset });
+    try out.print("  {s}--unshare-user{s} | {s}--unshare-user-try{s}\n", .{ option, reset, option, reset });
+    try out.print("  {s}--unshare-ipc{s} | {s}--unshare-pid{s} | {s}--unshare-net{s} | {s}--share-net{s}\n", .{ option, reset, option, reset, option, reset, option, reset });
+    try out.print("  {s}--unshare-uts{s} | {s}--unshare-cgroup{s} | {s}--unshare-cgroup-try{s}\n", .{ option, reset, option, reset, option, reset });
+    try out.print("  {s}--unshare-all{s}\n", .{ option, reset });
+    try out.print("  {s}--userns{s} FD | {s}--userns2{s} FD | {s}--pidns{s} FD\n", .{ option, reset, option, reset, option, reset });
+    try out.print("  {s}--uid{s} UID | {s}--gid{s} GID | {s}--hostname{s} HOST\n\n", .{ option, reset, option, reset, option, reset });
+
+    try out.print("{s}Process And Env{s}\n", .{ section, reset });
+    try out.print("  {s}--chdir{s} DIR\n", .{ option, reset });
+    try out.print("  {s}--setenv{s} VAR VALUE     (repeatable)\n", .{ option, reset });
+    try out.print("  {s}--unsetenv{s} VAR         (repeatable)\n", .{ option, reset });
+    try out.print("  {s}--clearenv{s}\n", .{ option, reset });
+    try out.print("  {s}--argv0{s} VALUE\n", .{ option, reset });
+    try out.print("  {s}--new-session{s} | {s}--die-with-parent{s} | {s}--as-pid-1{s}\n\n", .{ option, reset, option, reset, option, reset });
+
+    try out.print("{s}Status And Security{s}\n", .{ section, reset });
+    try out.print("  {s}--lock-file{s} PATH\n", .{ option, reset });
+    try out.print("  {s}--sync-fd{s} FD | {s}--block-fd{s} FD | {s}--userns-block-fd{s} FD\n", .{ option, reset, option, reset, option, reset });
+    try out.print("  {s}--info-fd{s} FD | {s}--json-status-fd{s} FD\n", .{ option, reset, option, reset });
+    try out.print("  {s}--seccomp{s} FD | {s}--add-seccomp-fd{s} FD\n", .{ option, reset, option, reset });
+    try out.print("  {s}--cap-add{s} CAP | {s}--cap-drop{s} CAP\n", .{ option, reset, option, reset });
+    try out.print("  {s}--disable-userns{s} | {s}--assert-userns-disabled{s}\n\n", .{ option, reset, option, reset });
+
+    try out.print("{s}Filesystem{s}\n", .{ section, reset });
+    try out.print("  {s}--perms{s} OCTAL | {s}--size{s} BYTES\n", .{ option, reset, option, reset });
+    try out.print("  {s}--bind{s} SRC DEST | {s}--bind-try{s} SRC DEST\n", .{ option, reset, option, reset });
+    try out.print("  {s}--dev-bind{s} SRC DEST | {s}--dev-bind-try{s} SRC DEST\n", .{ option, reset, option, reset });
+    try out.print("  {s}--ro-bind{s} SRC DEST | {s}--ro-bind-try{s} SRC DEST | {s}--remount-ro{s} DEST\n", .{ option, reset, option, reset, option, reset });
+    try out.print("  {s}--proc{s} DEST | {s}--dev{s} DEST | {s}--tmpfs{s} DEST | {s}--mqueue{s} DEST | {s}--dir{s} DEST\n", .{ option, reset, option, reset, option, reset, option, reset, option, reset });
+    try out.print("  {s}--file{s} FD DEST | {s}--bind-data{s} FD DEST | {s}--ro-bind-data{s} FD DEST\n", .{ option, reset, option, reset, option, reset });
+    try out.print("  {s}--symlink{s} SRC DEST | {s}--chmod{s} OCTAL PATH\n", .{ option, reset, option, reset });
+    try out.print("  {s}--overlay-src{s} SRC | {s}--overlay{s} RWSRC WORKDIR DEST\n", .{ option, reset, option, reset });
+    try out.print("  {s}--tmp-overlay{s} DEST | {s}--ro-overlay{s} DEST\n\n", .{ option, reset, option, reset });
+
+    try out.print("{s}Examples{s}\n", .{ section, reset });
+    try out.print("  {s}vb --unshare-user --proc /proc --dev /dev -- /bin/sh{s}\n", .{ dim, reset });
+    try out.print("  {s}vb --ro-bind /usr /usr --tmpfs /tmp -- /usr/bin/env{s}\n\n", .{ dim, reset });
+}
+
+fn shouldUseColor() bool {
+    if (std.process.getEnvVarOwned(std.heap.page_allocator, "NO_COLOR")) |v| {
+        defer std.heap.page_allocator.free(v);
+        return false;
+    } else |_| {}
+
+    if (std.process.getEnvVarOwned(std.heap.page_allocator, "CLICOLOR")) |v| {
+        defer std.heap.page_allocator.free(v);
+        if (v.len == 1 and v[0] == '0') return false;
+    } else |_| {}
+
+    return std.posix.isatty(std.posix.STDOUT_FILENO);
 }
