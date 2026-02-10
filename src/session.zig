@@ -38,10 +38,8 @@ pub fn spawn(jail_config: JailConfig, allocator: std.mem.Allocator) !Session {
     var container = try Container.init(jail_config, allocator);
     const pid = try container.spawn();
 
-    if (jail_config.status.json_status_fd) |fd| {
-        const ns_ids = status.queryNamespaceIds(pid) catch status.NamespaceIds{};
-        try status.emitSpawned(fd, pid, ns_ids);
-    }
+    const ns_ids = status.queryNamespaceIds(pid) catch status.NamespaceIds{};
+    try status.emitSpawnedWithOptions(jail_config.status, pid, ns_ids);
     if (jail_config.status.sync_fd) |fd| {
         try signalFd(fd);
     }
@@ -59,9 +57,7 @@ pub fn wait(session: *Session) !RunOutcome {
 
     try session.container.wait(session.pid);
     session.waited = true;
-    if (session.status.json_status_fd) |fd| {
-        try status.emitExited(fd, session.pid, 0);
-    }
+    try status.emitExitedWithOptions(session.status, session.pid, 0);
     return .{ .pid = session.pid, .exit_code = 0 };
 }
 

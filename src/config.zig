@@ -122,11 +122,37 @@ pub const ProcessOptions = struct {
 };
 
 pub const StatusOptions = struct {
+    pub const NamespaceIds = struct {
+        user: ?u64 = null,
+        pid: ?u64 = null,
+        net: ?u64 = null,
+        mount: ?u64 = null,
+        uts: ?u64 = null,
+        ipc: ?u64 = null,
+    };
+
+    pub const EventKind = enum {
+        spawned,
+        exited,
+    };
+
+    pub const Event = struct {
+        kind: EventKind,
+        pid: std.posix.pid_t,
+        timestamp: i64,
+        exit_code: ?u8 = null,
+        ns_ids: NamespaceIds = .{},
+    };
+
+    pub const EventCallback = *const fn (ctx: ?*anyopaque, event: Event) anyerror!void;
+
     json_status_fd: ?i32 = null,
     sync_fd: ?i32 = null,
     block_fd: ?i32 = null,
     userns_block_fd: ?i32 = null,
     lock_file_path: ?[]const u8 = null,
+    on_event: ?EventCallback = null,
+    callback_ctx: ?*anyopaque = null,
 };
 
 pub const SecurityOptions = struct {

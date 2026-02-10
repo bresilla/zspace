@@ -1,13 +1,7 @@
 const std = @import("std");
+const StatusOptions = @import("config.zig").StatusOptions;
 
-pub const NamespaceIds = struct {
-    user: ?u64 = null,
-    pid: ?u64 = null,
-    net: ?u64 = null,
-    mount: ?u64 = null,
-    uts: ?u64 = null,
-    ipc: ?u64 = null,
-};
+pub const NamespaceIds = StatusOptions.NamespaceIds;
 
 pub fn emitSpawned(fd: i32, pid: std.posix.pid_t, ns_ids: NamespaceIds) !void {
     const ts = std.time.timestamp();
@@ -36,6 +30,39 @@ pub fn emitExited(fd: i32, pid: std.posix.pid_t, exit_code: u8) !void {
     var file = std.fs.File{ .handle = fd };
     var writer = file.deprecatedWriter();
     try writer.print("{{\"event\":\"exited\",\"pid\":{},\"exit_code\":{},\"ts\":{}}}\n", .{ pid, exit_code, ts });
+}
+
+pub fn emitSpawnedWithOptions(options: StatusOptions, pid: std.posix.pid_t, ns_ids: NamespaceIds) !void {
+    const event: StatusOptions.Event = .{
+        .kind = .spawned,
+        .pid = pid,
+        .timestamp = std.time.timestamp(),
+        .ns_ids = ns_ids,
+    };
+    try emitEvent(options, event);
+}
+
+pub fn emitExitedWithOptions(options: StatusOptions, pid: std.posix.pid_t, exit_code: u8) !void {
+    const event: StatusOptions.Event = .{
+        .kind = .exited,
+        .pid = pid,
+        .timestamp = std.time.timestamp(),
+        .exit_code = exit_code,
+    };
+    try emitEvent(options, event);
+}
+
+fn emitEvent(options: StatusOptions, event: StatusOptions.Event) !void {
+    if (options.on_event) |cb| {
+        try cb(options.callback_ctx, event);
+    }
+
+    if (options.json_status_fd) |fd| {
+        switch (event.kind) {
+            .spawned => try emitSpawned(fd, event.pid, event.ns_ids),
+            .exited => try emitExited(fd, event.pid, event.exit_code orelse 0),
+        }
+    }
 }
 
 pub fn queryNamespaceIds(pid: std.posix.pid_t) !NamespaceIds {
@@ -76,4 +103,29 @@ fn writeOptionalU64(writer: anytype, key: []const u8, value: ?u64) !void {
 test "parseNamespaceInode parses inode from namespace link" {
     try std.testing.expectEqual(@as(?u64, 4026532000), parseNamespaceInode("net:[4026532000]"));
     try std.testing.expectEqual(@as(?u64, null), parseNamespaceInode("invalid"));
+}
+
+test "emitEvent invokes callback sink" {
+    const Ctx = struct {
+        called: bool = false,
+        saw_kind: ?StatusOptions.EventKind = null,
+    };
+
+    const Fn = struct {
+        fn onEvent(ctx: ?*anyopaque, event: StatusOptions.Event) !void {
+            const typed: *Ctx = @ptrCast(@alignCast(ctx.?));
+            typed.called = true;
+            typed.saw_kind = event.kind;
+        }
+    };
+
+    var ctx = Ctx{};
+    const options = StatusOptions{
+        .on_event = Fn.onEvent,
+        .callback_ctx = &ctx,
+    };
+
+    try emitExitedWithOptions(options, 1234, 0);
+    try std.testing.expect(ctx.called);
+    try std.testing.expectEqual(StatusOptions.EventKind.exited, ctx.saw_kind.?);
 }
