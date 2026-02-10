@@ -326,3 +326,51 @@ test "rollbackPaths handles empty mount list" {
     defer std.testing.allocator.free(ordered);
     try std.testing.expectEqual(@as(usize, 0), ordered.len);
 }
+
+test "rollbackPaths stress test with many mounts" {
+    const count: usize = 512;
+    const base = "/m/";
+
+    var mounted = try std.testing.allocator.alloc(MountedTarget, count);
+    defer std.testing.allocator.free(mounted);
+
+    var storage = try std.testing.allocator.alloc([16]u8, count);
+    defer std.testing.allocator.free(storage);
+
+    for (0..count) |idx| {
+        const suffix = try std.fmt.bufPrint(&storage[idx], "{d}", .{idx});
+        const path = try std.mem.concat(std.testing.allocator, u8, &.{ base, suffix });
+        errdefer std.testing.allocator.free(path);
+        mounted[idx] = .{ .path = path };
+    }
+    defer {
+        for (mounted) |m| {
+            std.testing.allocator.free(m.path);
+        }
+    }
+
+    const ordered = try rollbackPaths(mounted, std.testing.allocator);
+    defer std.testing.allocator.free(ordered);
+
+    try std.testing.expectEqual(count, ordered.len);
+    try std.testing.expectEqualStrings("/m/511", ordered[0]);
+    try std.testing.expectEqualStrings("/m/0", ordered[count - 1]);
+}
+
+test "rollbackPaths preserves strict reverse ordering" {
+    const mounted = [_]MountedTarget{
+        .{ .path = "/a" },
+        .{ .path = "/b" },
+        .{ .path = "/c" },
+        .{ .path = "/d" },
+        .{ .path = "/e" },
+    };
+
+    const ordered = try rollbackPaths(&mounted, std.testing.allocator);
+    defer std.testing.allocator.free(ordered);
+
+    const expected = [_][]const u8{ "/e", "/d", "/c", "/b", "/a" };
+    for (expected, 0..) |exp, idx| {
+        try std.testing.expectEqualStrings(exp, ordered[idx]);
+    }
+}
