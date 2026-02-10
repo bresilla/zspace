@@ -31,7 +31,7 @@ allocator: std.mem.Allocator,
 pub fn init(run_args: JailConfig, allocator: std.mem.Allocator) !Container {
     return .{
         .name = run_args.name,
-        .fs = Fs.init(run_args.rootfs_path),
+        .fs = Fs.init(run_args.rootfs_path, run_args.fs_actions),
         .cmd = run_args.cmd,
         .isolation = run_args.isolation,
         .process = run_args.process,

@@ -20,6 +20,44 @@ pub const LaunchProfile = enum {
     full_isolation,
 };
 
+pub const MountPair = struct {
+    src: []const u8,
+    dest: []const u8,
+};
+
+pub const TmpfsMount = struct {
+    dest: []const u8,
+    size_bytes: ?usize = null,
+    mode: ?u32 = null,
+};
+
+pub const DirAction = struct {
+    path: []const u8,
+    mode: ?u32 = null,
+};
+
+pub const SymlinkAction = struct {
+    target: []const u8,
+    path: []const u8,
+};
+
+pub const ChmodAction = struct {
+    path: []const u8,
+    mode: u32,
+};
+
+pub const FsAction = union(enum) {
+    bind: MountPair,
+    ro_bind: MountPair,
+    proc: []const u8,
+    dev: []const u8,
+    tmpfs: TmpfsMount,
+    dir: DirAction,
+    symlink: SymlinkAction,
+    chmod: ChmodAction,
+    remount_ro: []const u8,
+};
+
 pub const EnvironmentEntry = struct {
     key: []const u8,
     value: []const u8,
@@ -42,6 +80,7 @@ pub const JailConfig = struct {
     resources: ResourceLimits = .{},
     isolation: IsolationOptions = .{},
     process: ProcessOptions = .{},
+    fs_actions: []const FsAction = &.{},
 };
 
 pub const ShellConfig = struct {
@@ -52,6 +91,7 @@ pub const ShellConfig = struct {
     resources: ResourceLimits = .{},
     isolation: IsolationOptions = .{},
     process: ProcessOptions = .{},
+    fs_actions: []const FsAction = &.{},
 };
 
 pub const RunOutcome = struct {

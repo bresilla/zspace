@@ -11,6 +11,12 @@ pub const ResourceLimits = config.ResourceLimits;
 pub const ProcessOptions = config.ProcessOptions;
 pub const EnvironmentEntry = config.EnvironmentEntry;
 pub const LaunchProfile = config.LaunchProfile;
+pub const FsAction = config.FsAction;
+pub const MountPair = config.MountPair;
+pub const TmpfsMount = config.TmpfsMount;
+pub const DirAction = config.DirAction;
+pub const SymlinkAction = config.SymlinkAction;
+pub const ChmodAction = config.ChmodAction;
 pub const RunOutcome = config.RunOutcome;
 pub const default_shell_config = config.default_shell_config;
 pub const DoctorReport = doctor.DoctorReport;
@@ -42,6 +48,7 @@ pub fn launch_shell(shell_config: ShellConfig, allocator: std.mem.Allocator) !Ru
         .resources = shell_config.resources,
         .isolation = shell_config.isolation,
         .process = shell_config.process,
+        .fs_actions = shell_config.fs_actions,
     };
 
     return launch(jail_config, allocator);

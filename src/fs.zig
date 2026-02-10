@@ -1,13 +1,15 @@
 const std = @import("std");
 const linux = std.os.linux;
 const checkErr = @import("utils.zig").checkErr;
+const FsAction = @import("config.zig").FsAction;
 
 rootfs: []const u8,
+actions: []const FsAction,
 
 const Fs = @This();
 
-pub fn init(rootfs: []const u8) Fs {
-    return .{ .rootfs = rootfs };
+pub fn init(rootfs: []const u8, actions: []const FsAction) Fs {
+    return .{ .rootfs = rootfs, .actions = actions };
 }
 
 pub fn setup(self: *Fs, mount_fs: bool) !void {
@@ -16,11 +18,144 @@ pub fn setup(self: *Fs, mount_fs: bool) !void {
 
     if (!mount_fs) return;
 
-    // TODO: mount more filesystems
-    // from list: https://github.com/opencontainers/runtime-spec/blob/main/config-linux.md
+    if (self.actions.len == 0) {
+        try self.setupDefaultMounts();
+        return;
+    }
+
+    try self.executeActions();
+}
+
+fn setupDefaultMounts(self: *Fs) !void {
+    _ = self;
+
     try checkErr(linux.mount("proc", "proc", "proc", 0, 0), error.MountProc);
     try checkErr(linux.mount("tmpfs", "tmp", "tmpfs", 0, 0), error.MountTmpFs);
-    // ignore sysfs mount error since it can fail when
-    // executed in a new user namespace
     _ = linux.mount("sysfs", "sys", "sysfs", 0, 0);
+}
+
+fn executeActions(self: *Fs) !void {
+    for (self.actions) |action| {
+        switch (action) {
+            .bind => |mount_pair| {
+                try ensurePath(mount_pair.dest);
+                const flags = linux.MS.BIND | linux.MS.REC;
+                try mountPath(mount_pair.src, mount_pair.dest, null, flags, null, error.BindMount);
+            },
+            .ro_bind => |mount_pair| {
+                try ensurePath(mount_pair.dest);
+                const bind_flags = linux.MS.BIND | linux.MS.REC;
+                try mountPath(mount_pair.src, mount_pair.dest, null, bind_flags, null, error.BindMount);
+
+                const remount_flags = linux.MS.BIND | linux.MS.REMOUNT | linux.MS.RDONLY;
+                try mountPath(null, mount_pair.dest, null, remount_flags, null, error.RemountReadOnly);
+            },
+            .proc => |dest| {
+                try ensurePath(dest);
+                try mountPath("proc", dest, "proc", 0, null, error.MountProc);
+            },
+            .dev => |dest| {
+                try ensurePath(dest);
+                try mountPath("devtmpfs", dest, "devtmpfs", 0, null, error.MountDevTmpFs);
+            },
+            .tmpfs => |tmpfs| {
+                try ensurePath(tmpfs.dest);
+
+                var opts_buf: [64]u8 = undefined;
+                const opts = if (tmpfs.size_bytes != null or tmpfs.mode != null)
+                    try formatTmpfsOpts(&opts_buf, tmpfs)
+                else
+                    null;
+
+                try mountPath("tmpfs", tmpfs.dest, "tmpfs", 0, opts, error.MountTmpFs);
+            },
+            .dir => |dir_action| {
+                try ensurePath(dir_action.path);
+                if (dir_action.mode) |mode| {
+                    try std.posix.fchmodat(std.posix.AT.FDCWD, dir_action.path, @intCast(mode), 0);
+                }
+            },
+            .symlink => |symlink| {
+                const parent = std.fs.path.dirname(symlink.path);
+                if (parent) |p| {
+                    try ensurePath(p);
+                }
+                std.fs.cwd().symLink(symlink.target, trimPath(symlink.path), .{}) catch |err| switch (err) {
+                    error.PathAlreadyExists => {},
+                    else => return err,
+                };
+            },
+            .chmod => |chmod_action| {
+                try std.posix.fchmodat(std.posix.AT.FDCWD, chmod_action.path, @intCast(chmod_action.mode), 0);
+            },
+            .remount_ro => |dest| {
+                const flags = linux.MS.REMOUNT | linux.MS.RDONLY;
+                try mountPath(null, dest, null, flags, null, error.RemountReadOnly);
+            },
+        }
+    }
+}
+
+fn formatTmpfsOpts(buffer: []u8, tmpfs: @import("config.zig").TmpfsMount) ![]const u8 {
+    if (tmpfs.size_bytes) |size| {
+        if (tmpfs.mode) |mode| {
+            return std.fmt.bufPrint(buffer, "size={},mode={o}", .{ size, mode });
+        }
+        return std.fmt.bufPrint(buffer, "size={}", .{size});
+    }
+
+    return std.fmt.bufPrint(buffer, "mode={o}", .{tmpfs.mode.?});
+}
+
+fn ensurePath(path: []const u8) !void {
+    const normalized = trimPath(path);
+    if (normalized.len == 0) return;
+    try std.fs.cwd().makePath(normalized);
+}
+
+fn trimPath(path: []const u8) []const u8 {
+    return std.mem.trimLeft(u8, path, "/");
+}
+
+fn mountPath(
+    special: ?[]const u8,
+    dir: []const u8,
+    fstype: ?[]const u8,
+    flags: u32,
+    data: ?[]const u8,
+    err_ty: anytype,
+) !void {
+    var dir_z = try std.posix.toPosixPath(dir);
+
+    var special_z: [std.posix.PATH_MAX - 1:0]u8 = undefined;
+    const special_ptr = if (special) |s| blk: {
+        special_z = try std.posix.toPosixPath(s);
+        break :blk @as([*:0]const u8, &special_z);
+    } else null;
+
+    var fstype_z: [std.posix.PATH_MAX - 1:0]u8 = undefined;
+    const fstype_ptr = if (fstype) |s| blk: {
+        fstype_z = try std.posix.toPosixPath(s);
+        break :blk @as([*:0]const u8, &fstype_z);
+    } else null;
+
+    var data_z: [std.posix.PATH_MAX - 1:0]u8 = undefined;
+    const data_ptr = if (data) |d| blk: {
+        data_z = try std.posix.toPosixPath(d);
+        break :blk @as([*:0]const u8, &data_z);
+    } else null;
+
+    try checkErr(linux.mount(special_ptr, &dir_z, fstype_ptr, flags, if (data_ptr) |p| @intFromPtr(p) else 0), err_ty);
+}
+
+test "trimPath strips leading slashes" {
+    try std.testing.expectEqualStrings("tmp/a", trimPath("/tmp/a"));
+    try std.testing.expectEqualStrings("tmp/a", trimPath("////tmp/a"));
+    try std.testing.expectEqualStrings("", trimPath("/"));
+}
+
+test "formatTmpfsOpts formats size and mode" {
+    var buf: [64]u8 = undefined;
+    const opts = try formatTmpfsOpts(&buf, .{ .dest = "/tmp", .size_bytes = 1024, .mode = 0o700 });
+    try std.testing.expectEqualStrings("size=1024,mode=700", opts);
 }
