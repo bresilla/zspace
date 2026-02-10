@@ -4,6 +4,10 @@ const checkErr = @import("utils.zig").checkErr;
 const FsAction = @import("config.zig").FsAction;
 const OverlaySource = @import("config.zig").OverlaySource;
 
+const MountedTarget = struct {
+    path: []const u8,
+};
+
 rootfs: []const u8,
 actions: []const FsAction,
 
@@ -40,6 +44,9 @@ fn executeActions(self: *Fs) !void {
     defer overlay_sources.deinit(std.heap.page_allocator);
     var tmp_overlay_counter: usize = 0;
     var data_bind_counter: usize = 0;
+    var mounted_targets = std.ArrayList(MountedTarget).empty;
+    defer mounted_targets.deinit(std.heap.page_allocator);
+    errdefer rollbackMounts(mounted_targets.items);
 
     for (self.actions) |action| {
         switch (action) {
@@ -47,11 +54,13 @@ fn executeActions(self: *Fs) !void {
                 try ensurePath(mount_pair.dest);
                 const flags = linux.MS.BIND | linux.MS.REC;
                 try mountPath(mount_pair.src, mount_pair.dest, null, flags, null, error.BindMount);
+                try mounted_targets.append(std.heap.page_allocator, .{ .path = mount_pair.dest });
             },
             .ro_bind => |mount_pair| {
                 try ensurePath(mount_pair.dest);
                 const bind_flags = linux.MS.BIND | linux.MS.REC;
                 try mountPath(mount_pair.src, mount_pair.dest, null, bind_flags, null, error.BindMount);
+                try mounted_targets.append(std.heap.page_allocator, .{ .path = mount_pair.dest });
 
                 const remount_flags = linux.MS.BIND | linux.MS.REMOUNT | linux.MS.RDONLY;
                 try mountPath(null, mount_pair.dest, null, remount_flags, null, error.RemountReadOnly);
@@ -59,10 +68,12 @@ fn executeActions(self: *Fs) !void {
             .proc => |dest| {
                 try ensurePath(dest);
                 try mountPath("proc", dest, "proc", 0, null, error.MountProc);
+                try mounted_targets.append(std.heap.page_allocator, .{ .path = dest });
             },
             .dev => |dest| {
                 try ensurePath(dest);
                 try mountPath("devtmpfs", dest, "devtmpfs", 0, null, error.MountDevTmpFs);
+                try mounted_targets.append(std.heap.page_allocator, .{ .path = dest });
             },
             .tmpfs => |tmpfs| {
                 try ensurePath(tmpfs.dest);
@@ -74,6 +85,7 @@ fn executeActions(self: *Fs) !void {
                     null;
 
                 try mountPath("tmpfs", tmpfs.dest, "tmpfs", 0, opts, error.MountTmpFs);
+                try mounted_targets.append(std.heap.page_allocator, .{ .path = tmpfs.dest });
             },
             .dir => |dir_action| {
                 try ensurePath(dir_action.path);
@@ -111,6 +123,7 @@ fn executeActions(self: *Fs) !void {
                 var opts_buf: [std.posix.PATH_MAX - 1]u8 = undefined;
                 const opts = try std.fmt.bufPrint(&opts_buf, "lowerdir={s},upperdir={s},workdir={s}", .{ lower, o.upper, o.work });
                 try mountPath("overlay", o.dest, "overlay", 0, opts, error.MountOverlay);
+                try mounted_targets.append(std.heap.page_allocator, .{ .path = o.dest });
             },
             .tmp_overlay => |o| {
                 const lower = findOverlaySource(overlay_sources.items, o.source_key) orelse return error.MissingOverlaySource;
@@ -130,6 +143,7 @@ fn executeActions(self: *Fs) !void {
                 var opts_buf: [std.posix.PATH_MAX - 1]u8 = undefined;
                 const opts = try std.fmt.bufPrint(&opts_buf, "lowerdir={s},upperdir={s},workdir={s}", .{ lower, upper, work });
                 try mountPath("overlay", o.dest, "overlay", 0, opts, error.MountOverlay);
+                try mounted_targets.append(std.heap.page_allocator, .{ .path = o.dest });
                 tmp_overlay_counter += 1;
             },
             .ro_overlay => |o| {
@@ -140,6 +154,7 @@ fn executeActions(self: *Fs) !void {
                 var opts_buf: [std.posix.PATH_MAX - 1]u8 = undefined;
                 const opts = try std.fmt.bufPrint(&opts_buf, "lowerdir={s}", .{lower});
                 try mountPath("overlay", o.dest, "overlay", linux.MS.RDONLY, opts, error.MountOverlay);
+                try mounted_targets.append(std.heap.page_allocator, .{ .path = o.dest });
             },
             .bind_data => |b| {
                 const src = try writeDataSource(b.data, data_bind_counter);
@@ -148,6 +163,7 @@ fn executeActions(self: *Fs) !void {
                 try ensurePath(b.dest);
                 const flags = linux.MS.BIND | linux.MS.REC;
                 try mountPath(src, b.dest, null, flags, null, error.BindMount);
+                try mounted_targets.append(std.heap.page_allocator, .{ .path = b.dest });
                 data_bind_counter += 1;
             },
             .ro_bind_data => |b| {
@@ -157,6 +173,7 @@ fn executeActions(self: *Fs) !void {
                 try ensurePath(b.dest);
                 const bind_flags = linux.MS.BIND | linux.MS.REC;
                 try mountPath(src, b.dest, null, bind_flags, null, error.BindMount);
+                try mounted_targets.append(std.heap.page_allocator, .{ .path = b.dest });
 
                 const remount_flags = linux.MS.BIND | linux.MS.REMOUNT | linux.MS.RDONLY;
                 try mountPath(null, b.dest, null, remount_flags, null, error.RemountReadOnly);
@@ -173,6 +190,15 @@ fn executeActions(self: *Fs) !void {
                 try file.writeAll(f.data);
             },
         }
+    }
+}
+
+fn rollbackMounts(mounted_targets: []const MountedTarget) void {
+    var i = mounted_targets.len;
+    while (i > 0) {
+        i -= 1;
+        var path_z = std.posix.toPosixPath(mounted_targets[i].path) catch continue;
+        _ = linux.umount2(&path_z, linux.MNT.DETACH);
     }
 }
 
