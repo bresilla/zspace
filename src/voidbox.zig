@@ -243,7 +243,8 @@ pub fn spawn(jail_config: JailConfig, allocator: std.mem.Allocator) !Session {
     const pid = try container.spawn();
 
     if (jail_config.status.json_status_fd) |fd| {
-        try status.emitJson(fd, "spawned", pid, null);
+        const ns_ids = status.queryNamespaceIds(pid) catch status.NamespaceIds{};
+        try status.emitSpawned(fd, pid, ns_ids);
     }
     if (jail_config.status.sync_fd) |fd| {
         try signalFd(fd);
@@ -263,7 +264,7 @@ pub fn wait(session: *Session) !RunOutcome {
     try session.container.wait(session.pid);
     session.waited = true;
     if (session.status.json_status_fd) |fd| {
-        try status.emitJson(fd, "exited", session.pid, 0);
+        try status.emitExited(fd, session.pid, 0);
     }
     return .{ .pid = session.pid, .exit_code = 0 };
 }
