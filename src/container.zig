@@ -10,6 +10,7 @@ const JailConfig = @import("config.zig").JailConfig;
 const IsolationOptions = @import("config.zig").IsolationOptions;
 const ProcessOptions = @import("config.zig").ProcessOptions;
 const SecurityOptions = @import("config.zig").SecurityOptions;
+const StatusOptions = @import("config.zig").StatusOptions;
 const SeccompInstruction = @import("config.zig").SecurityOptions.SeccompInstruction;
 
 const LINUX_CAPABILITY_VERSION_3 = 0x20080522;
@@ -33,6 +34,7 @@ cmd: []const []const u8,
 isolation: IsolationOptions,
 process: ProcessOptions,
 security: SecurityOptions,
+status: StatusOptions,
 
 fs: Fs,
 net: ?Net,
@@ -47,6 +49,7 @@ pub fn init(run_args: JailConfig, allocator: std.mem.Allocator) !Container {
         .isolation = run_args.isolation,
         .process = run_args.process,
         .security = run_args.security,
+        .status = run_args.status,
         .net = if (run_args.isolation.net) try Net.init(allocator, run_args.name) else null,
         .allocator = allocator,
         .cgroup = try Cgroup.init(run_args.name, run_args.resources, allocator),
@@ -98,6 +101,10 @@ pub fn spawn(self: *Container) !linux.pid_t {
     }
     // enter container cgroup
     try self.cgroup.enterCgroup(@intCast(pid));
+
+    if (self.status.userns_block_fd) |fd| {
+        try waitForFd(fd);
+    }
     self.createUserRootMappings(@intCast(pid)) catch @panic("creating root user mapping failed");
 
     // signal done by writing to pipe
@@ -167,6 +174,11 @@ fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t) !void {
     }
 
     std.process.execve(self.allocator, exec_cmd, &env_map) catch return error.CmdFailed;
+}
+
+fn waitForFd(fd: i32) !void {
+    var buf: [1]u8 = undefined;
+    _ = try std.posix.read(fd, &buf);
 }
 
 fn applyCapabilities(self: *Container) !void {

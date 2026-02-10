@@ -75,6 +75,10 @@ pub const ProcessOptions = struct {
 
 pub const StatusOptions = struct {
     json_status_fd: ?i32 = null,
+    sync_fd: ?i32 = null,
+    block_fd: ?i32 = null,
+    userns_block_fd: ?i32 = null,
+    lock_file_path: ?[]const u8 = null,
 };
 
 pub const SecurityOptions = struct {

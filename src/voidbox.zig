@@ -30,9 +30,13 @@ pub const Session = struct {
     container: Container,
     pid: std.posix.pid_t,
     status: StatusOptions,
+    lock_file: ?std.fs.File = null,
     waited: bool = false,
 
     pub fn deinit(self: *Session) void {
+        if (self.lock_file) |f| {
+            f.close();
+        }
         self.container.deinit();
     }
 };
@@ -124,6 +128,18 @@ pub fn validate(jail_config: JailConfig) !void {
     if (jail_config.status.json_status_fd) |fd| {
         if (fd < 0) return error.InvalidStatusFd;
     }
+    if (jail_config.status.sync_fd) |fd| {
+        if (fd < 0) return error.InvalidSyncFd;
+    }
+    if (jail_config.status.block_fd) |fd| {
+        if (fd < 0) return error.InvalidBlockFd;
+    }
+    if (jail_config.status.userns_block_fd) |fd| {
+        if (fd < 0) return error.InvalidUsernsBlockFd;
+    }
+    if (jail_config.status.lock_file_path) |path| {
+        if (path.len == 0) return error.InvalidLockFilePath;
+    }
 
     for (jail_config.security.cap_add) |cap| {
         if (!std.os.linux.CAP.valid(cap)) return error.InvalidCapability;
@@ -197,6 +213,16 @@ fn validateFsAction(action: FsAction) !void {
 
 pub fn spawn(jail_config: JailConfig, allocator: std.mem.Allocator) !Session {
     try validate(jail_config);
+
+    if (jail_config.status.block_fd) |fd| {
+        try waitForFd(fd);
+    }
+
+    const lock_file = if (jail_config.status.lock_file_path) |path|
+        try openOrCreateFile(path)
+    else
+        null;
+
     try runtime.init();
     var container = try Container.init(jail_config, allocator);
     const pid = try container.spawn();
@@ -204,11 +230,15 @@ pub fn spawn(jail_config: JailConfig, allocator: std.mem.Allocator) !Session {
     if (jail_config.status.json_status_fd) |fd| {
         try status.emitJson(fd, "spawned", pid, null);
     }
+    if (jail_config.status.sync_fd) |fd| {
+        try signalFd(fd);
+    }
 
     return .{
         .container = container,
         .pid = pid,
         .status = jail_config.status,
+        .lock_file = lock_file,
     };
 }
 
@@ -231,6 +261,23 @@ fn build_shell_cmd(shell_config: ShellConfig, allocator: std.mem.Allocator) ![]c
         cmd[idx + 1] = arg;
     }
     return cmd;
+}
+
+fn waitForFd(fd: i32) !void {
+    var buf: [1]u8 = undefined;
+    _ = try std.posix.read(fd, &buf);
+}
+
+fn signalFd(fd: i32) !void {
+    const buf = [_]u8{1};
+    _ = try std.posix.write(fd, &buf);
+}
+
+fn openOrCreateFile(path: []const u8) !std.fs.File {
+    return std.fs.openFileAbsolute(path, .{ .mode = .read_write }) catch |err| switch (err) {
+        error.FileNotFound => std.fs.createFileAbsolute(path, .{ .read = true, .truncate = false }),
+        else => err,
+    };
 }
 
 test "with_profile full_isolation sets hardened defaults" {
@@ -321,6 +368,17 @@ test "validate rejects invalid status fd" {
     };
 
     try std.testing.expectError(error.InvalidStatusFd, validate(cfg));
+}
+
+test "validate rejects invalid sync fd" {
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .status = .{ .sync_fd = -1 },
+    };
+
+    try std.testing.expectError(error.InvalidSyncFd, validate(cfg));
 }
 
 test "security defaults to no_new_privs" {

@@ -127,6 +127,22 @@ pub const RunArgs = struct {
                 idx += 1;
                 if (idx >= argv.items.len) return error.MissingValue;
                 status.json_status_fd = try std.fmt.parseInt(i32, argv.items[idx], 10);
+            } else if (eql(arg, "--sync-fd")) {
+                idx += 1;
+                if (idx >= argv.items.len) return error.MissingValue;
+                status.sync_fd = try std.fmt.parseInt(i32, argv.items[idx], 10);
+            } else if (eql(arg, "--block-fd")) {
+                idx += 1;
+                if (idx >= argv.items.len) return error.MissingValue;
+                status.block_fd = try std.fmt.parseInt(i32, argv.items[idx], 10);
+            } else if (eql(arg, "--userns-block-fd")) {
+                idx += 1;
+                if (idx >= argv.items.len) return error.MissingValue;
+                status.userns_block_fd = try std.fmt.parseInt(i32, argv.items[idx], 10);
+            } else if (eql(arg, "--lock-file")) {
+                idx += 1;
+                if (idx >= argv.items.len) return error.MissingValue;
+                status.lock_file_path = argv.items[idx];
             } else if (eql(arg, "--bind")) {
                 idx += 1;
                 if (idx >= argv.items.len) return error.MissingValue;
@@ -317,7 +333,7 @@ pub const help =
     \\  profile: --profile minimal|default|full_isolation
     \\  process flags: --chdir <path> --argv0 <value> --setenv KEY=VAL --unsetenv KEY --clearenv --new-session --die-with-parent
     \\  security flags: --no-new-privs --allow-new-privs --seccomp disabled|strict --seccomp-fd <fd> --cap-drop <num> --cap-add <num>
-    \\  status flags: --json-status-fd <fd>
+    \\  status flags: --json-status-fd <fd> --sync-fd <fd> --block-fd <fd> --userns-block-fd <fd> --lock-file <path>
     \\  fs flags: --bind SRC:DEST --ro-bind SRC:DEST --proc DEST --dev DEST --tmpfs DEST[:size=N,mode=OCT] --dir PATH[:MODE] --symlink TARGET:PATH --chmod PATH:MODE --remount-ro DEST
     \\  default command when omitted: /bin/sh
     \\ps
