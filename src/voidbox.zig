@@ -11,6 +11,7 @@ pub const ResourceLimits = config.ResourceLimits;
 pub const ProcessOptions = config.ProcessOptions;
 pub const SecurityOptions = config.SecurityOptions;
 pub const SeccompMode = config.SecurityOptions.SeccompMode;
+pub const SeccompInstruction = config.SecurityOptions.SeccompInstruction;
 pub const EnvironmentEntry = config.EnvironmentEntry;
 pub const LaunchProfile = config.LaunchProfile;
 pub const FsAction = config.FsAction;
@@ -126,8 +127,14 @@ pub fn validate(jail_config: JailConfig) !void {
     if (jail_config.security.seccomp_filter_fds.len > 0) {
         return error.SeccompFilterFdsNotSupportedYet;
     }
-    if (jail_config.security.seccomp_mode == .strict and !jail_config.security.no_new_privs) {
-        return error.SeccompStrictRequiresNoNewPrivs;
+    if (jail_config.security.seccomp_mode == .strict and jail_config.security.seccomp_filter != null) {
+        return error.SeccompModeConflict;
+    }
+    if (jail_config.security.seccomp_filter) |filter| {
+        if (filter.len == 0) return error.InvalidSeccompFilter;
+    }
+    if ((jail_config.security.seccomp_mode == .strict or jail_config.security.seccomp_filter != null) and !jail_config.security.no_new_privs) {
+        return error.SeccompRequiresNoNewPrivs;
     }
 
     for (jail_config.fs_actions) |action| {
@@ -366,5 +373,53 @@ test "validate requires no_new_privs for seccomp strict" {
         },
     };
 
-    try std.testing.expectError(error.SeccompStrictRequiresNoNewPrivs, validate(cfg));
+    try std.testing.expectError(error.SeccompRequiresNoNewPrivs, validate(cfg));
+}
+
+test "validate rejects conflicting seccomp mode and filter" {
+    const allow_all = [_]SeccompInstruction{.{
+        .code = 0x06,
+        .jt = 0,
+        .jf = 0,
+        .k = std.os.linux.seccomp.RET.ALLOW,
+    }};
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .security = .{
+            .seccomp_mode = .strict,
+            .seccomp_filter = &allow_all,
+        },
+    };
+
+    try std.testing.expectError(error.SeccompModeConflict, validate(cfg));
+}
+
+test "validate rejects empty seccomp filter" {
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .security = .{ .seccomp_filter = &.{} },
+    };
+
+    try std.testing.expectError(error.InvalidSeccompFilter, validate(cfg));
+}
+
+test "validate accepts seccomp filter baseline" {
+    const allow_all = [_]SeccompInstruction{.{
+        .code = 0x06,
+        .jt = 0,
+        .jf = 0,
+        .k = std.os.linux.seccomp.RET.ALLOW,
+    }};
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .security = .{ .seccomp_filter = &allow_all },
+    };
+
+    try validate(cfg);
 }

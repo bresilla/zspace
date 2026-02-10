@@ -79,10 +79,18 @@ pub const SecurityOptions = struct {
         strict,
     };
 
+    pub const SeccompInstruction = extern struct {
+        code: u16,
+        jt: u8,
+        jf: u8,
+        k: u32,
+    };
+
     no_new_privs: bool = true,
     cap_drop: []const u8 = &.{},
     cap_add: []const u8 = &.{},
     seccomp_mode: SeccompMode = .disabled,
+    seccomp_filter: ?[]const SeccompInstruction = null,
     seccomp_filter_fds: []const i32 = &.{},
 };
 

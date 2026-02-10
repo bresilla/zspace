@@ -10,8 +10,15 @@ const JailConfig = @import("config.zig").JailConfig;
 const IsolationOptions = @import("config.zig").IsolationOptions;
 const ProcessOptions = @import("config.zig").ProcessOptions;
 const SecurityOptions = @import("config.zig").SecurityOptions;
+const SeccompInstruction = @import("config.zig").SecurityOptions.SeccompInstruction;
 
 const LINUX_CAPABILITY_VERSION_3 = 0x20080522;
+const SECCOMP_SET_MODE_FILTER: u32 = 1;
+
+const SeccompProgram = extern struct {
+    len: u16,
+    filter: [*]SeccompInstruction,
+};
 
 const ChildProcessArgs = struct {
     container: *Container,
@@ -126,6 +133,12 @@ fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t) !void {
     try self.applyCapabilities();
     if (self.security.seccomp_mode == .strict) {
         try checkErr(linux.prctl(@intFromEnum(linux.PR.SET_SECCOMP), 1, 0, 0, 0), error.SeccompFailed);
+    } else if (self.security.seccomp_filter) |filter| {
+        var prog = SeccompProgram{
+            .len = @intCast(filter.len),
+            .filter = @constCast(filter.ptr),
+        };
+        try checkErr(linux.seccomp(SECCOMP_SET_MODE_FILTER, 0, @ptrCast(&prog)), error.SeccompFailed);
     }
 
     self.sethostname();
