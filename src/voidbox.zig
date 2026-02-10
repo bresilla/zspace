@@ -677,3 +677,48 @@ test "public API compile-time surface" {
         _ = @as(fn ([]const u8) ShellConfig, default_shell_config);
     }
 }
+
+test "integration smoke launch_shell happy path" {
+    if (!integrationTestsEnabled()) return error.SkipZigTest;
+
+    var shell_cfg = default_shell_config("/");
+    shell_cfg.name = "itest-shell";
+    shell_cfg.shell_args = &.{ "-c", "exit 0" };
+    shell_cfg.isolation = .{
+        .net = false,
+        .mount = false,
+        .pid = false,
+        .uts = false,
+        .ipc = false,
+    };
+
+    const outcome = try launch_shell(shell_cfg, std.testing.allocator);
+    try std.testing.expectEqual(@as(u8, 0), outcome.exit_code);
+}
+
+test "integration smoke launch with net disabled" {
+    if (!integrationTestsEnabled()) return error.SkipZigTest;
+
+    const cfg: JailConfig = .{
+        .name = "itest-netless",
+        .rootfs_path = "/",
+        .cmd = &.{ "/bin/sh", "-c", "exit 0" },
+        .isolation = .{
+            .net = false,
+            .mount = false,
+            .pid = false,
+            .uts = false,
+            .ipc = false,
+        },
+    };
+
+    const outcome = try launch(cfg, std.testing.allocator);
+    try std.testing.expectEqual(@as(u8, 0), outcome.exit_code);
+}
+
+fn integrationTestsEnabled() bool {
+    const value = std.process.getEnvVarOwned(std.heap.page_allocator, "VOIDBOX_RUN_INTEGRATION") catch return false;
+    defer std.heap.page_allocator.free(value);
+
+    return std.mem.eql(u8, value, "1") or std.ascii.eqlIgnoreCase(value, "true");
+}
