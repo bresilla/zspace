@@ -6,21 +6,15 @@ const c = @cImport(@cInclude("signal.h"));
 const Net = @import("net.zig");
 const Cgroup = @import("cgroup.zig");
 const Fs = @import("fs.zig");
+const namespace = @import("namespace.zig");
+const caps = @import("caps.zig");
+const seccomp = @import("seccomp.zig");
 const JailConfig = @import("config.zig").JailConfig;
 const IsolationOptions = @import("config.zig").IsolationOptions;
 const NamespaceFds = @import("config.zig").NamespaceFds;
 const ProcessOptions = @import("config.zig").ProcessOptions;
 const SecurityOptions = @import("config.zig").SecurityOptions;
 const StatusOptions = @import("config.zig").StatusOptions;
-const SeccompInstruction = @import("config.zig").SecurityOptions.SeccompInstruction;
-
-const LINUX_CAPABILITY_VERSION_3 = 0x20080522;
-const SECCOMP_SET_MODE_FILTER: u32 = 1;
-
-const SeccompProgram = extern struct {
-    len: u16,
-    filter: [*]SeccompInstruction,
-};
 
 const ChildProcessArgs = struct {
     container: *Container,
@@ -87,7 +81,7 @@ pub fn spawn(self: *Container) !linux.pid_t {
     var stack = try self.allocator.alloc(u8, 1024 * 1024);
     var ctid: i32 = 0;
     var ptid: i32 = 0;
-    const clone_flags = computeCloneFlags(self.isolation);
+    const clone_flags = namespace.computeCloneFlags(self.isolation);
     const pid = linux.clone(childFn, @intFromPtr(&stack[0]) + stack.len, clone_flags, @intFromPtr(&childp_args), &ptid, 0, &ctid);
     try checkErr(pid, error.CloneFailed);
     std.posix.close(childp_args.pipe[0]);
@@ -103,23 +97,13 @@ pub fn spawn(self: *Container) !linux.pid_t {
     if (self.status.userns_block_fd) |fd| {
         try waitForFd(fd);
     }
-    self.createUserRootMappings(@intCast(pid)) catch @panic("creating root user mapping failed");
+    namespace.writeUserRootMappings(self.allocator, @intCast(pid)) catch @panic("creating root user mapping failed");
 
     // signal done by writing to pipe
     const buff = [_]u8{0};
     _ = try std.posix.write(childp_args.pipe[1], &buff);
 
     return @intCast(pid);
-}
-
-fn computeCloneFlags(isolation: IsolationOptions) u32 {
-    var flags: u32 = linux.CLONE.NEWUSER | c.SIGCHLD;
-    if (isolation.net) flags |= linux.CLONE.NEWNET;
-    if (isolation.mount) flags |= linux.CLONE.NEWNS;
-    if (isolation.pid) flags |= linux.CLONE.NEWPID;
-    if (isolation.uts) flags |= linux.CLONE.NEWUTS;
-    if (isolation.ipc) flags |= linux.CLONE.NEWIPC;
-    return flags;
 }
 
 pub fn wait(self: *Container, pid: linux.pid_t) !void {
@@ -136,7 +120,7 @@ fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t) !void {
     try checkErr(linux.setreuid(uid, uid), error.UID);
     try checkErr(linux.setregid(gid, gid), error.GID);
 
-    try self.attachNamespaces();
+    try namespace.attach(self.namespace_fds);
 
     if (self.process.new_session) {
         _ = std.posix.setsid() catch return error.SetSidFailed;
@@ -147,8 +131,8 @@ fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t) !void {
     if (self.security.no_new_privs) {
         try checkErr(linux.prctl(@intFromEnum(linux.PR.SET_NO_NEW_PRIVS), 1, 0, 0, 0), error.NoNewPrivsFailed);
     }
-    try self.applyCapabilities();
-    try self.applySeccomp();
+    try caps.apply(self.security);
+    try seccomp.apply(self.security, self.allocator);
 
     self.sethostname();
     try self.fs.setup(self.isolation.mount);
@@ -195,105 +179,6 @@ fn waitForFd(fd: i32) !void {
     _ = try std.posix.read(fd, &buf);
 }
 
-fn applyCapabilities(self: *Container) !void {
-    var cap_hdr = linux.cap_user_header_t{
-        .version = LINUX_CAPABILITY_VERSION_3,
-        .pid = 0,
-    };
-    var cap_data = [_]linux.cap_user_data_t{
-        .{ .effective = 0, .permitted = 0, .inheritable = 0 },
-        .{ .effective = 0, .permitted = 0, .inheritable = 0 },
-    };
-
-    try checkErr(linux.capget(&cap_hdr, &cap_data[0]), error.CapabilityReadFailed);
-
-    for (self.security.cap_add) |cap| {
-        const index = linux.CAP.TO_INDEX(cap);
-        const mask = linux.CAP.TO_MASK(cap);
-        cap_data[index].effective |= mask;
-        cap_data[index].permitted |= mask;
-    }
-
-    for (self.security.cap_drop) |cap| {
-        const index = linux.CAP.TO_INDEX(cap);
-        const mask = linux.CAP.TO_MASK(cap);
-        cap_data[index].effective &= ~mask;
-        cap_data[index].permitted &= ~mask;
-        cap_data[index].inheritable &= ~mask;
-    }
-
-    try checkErr(linux.capset(&cap_hdr, &cap_data[0]), error.CapabilitySetFailed);
-
-    for (self.security.cap_drop) |cap| {
-        try checkErr(linux.prctl(@intFromEnum(linux.PR.CAPBSET_DROP), cap, 0, 0, 0), error.CapabilityDropFailed);
-    }
-}
-
-fn applySeccomp(self: *Container) !void {
-    if (self.security.seccomp_mode == .strict) {
-        try checkErr(linux.prctl(@intFromEnum(linux.PR.SET_SECCOMP), 1, 0, 0, 0), error.SeccompFailed);
-        return;
-    }
-
-    if (self.security.seccomp_filter) |filter| {
-        try applySeccompFilter(filter);
-    }
-    for (self.security.seccomp_filters) |filter| {
-        try applySeccompFilter(filter);
-    }
-    for (self.security.seccomp_filter_fds) |fd| {
-        try self.applySeccompFilterFd(fd);
-    }
-}
-
-fn applySeccompFilter(filter: []const SeccompInstruction) !void {
-    var prog = SeccompProgram{
-        .len = @intCast(filter.len),
-        .filter = @constCast(filter.ptr),
-    };
-    try checkErr(linux.seccomp(SECCOMP_SET_MODE_FILTER, 0, @ptrCast(&prog)), error.SeccompFailed);
-}
-
-fn applySeccompFilterFd(self: *Container, fd: i32) !void {
-    var file = std.fs.File{ .handle = fd };
-    const raw = try file.readToEndAlloc(self.allocator, 1024 * 1024);
-    defer self.allocator.free(raw);
-
-    if (raw.len == 0 or raw.len % @sizeOf(SeccompInstruction) != 0) {
-        return error.InvalidSeccompFdProgram;
-    }
-
-    const count = raw.len / @sizeOf(SeccompInstruction);
-    const filter = try self.allocator.alloc(SeccompInstruction, count);
-    defer self.allocator.free(filter);
-
-    @memcpy(std.mem.sliceAsBytes(filter), raw);
-    try applySeccompFilter(filter);
-}
-
-fn attachNamespaces(self: *Container) !void {
-    if (self.namespace_fds.mount) |fd| {
-        try attachNamespaceFd(fd, linux.CLONE.NEWNS);
-    }
-    if (self.namespace_fds.net) |fd| {
-        try attachNamespaceFd(fd, linux.CLONE.NEWNET);
-    }
-    if (self.namespace_fds.uts) |fd| {
-        try attachNamespaceFd(fd, linux.CLONE.NEWUTS);
-    }
-    if (self.namespace_fds.ipc) |fd| {
-        try attachNamespaceFd(fd, linux.CLONE.NEWIPC);
-    }
-    if (self.namespace_fds.pid != null or self.namespace_fds.user != null) {
-        return error.NamespaceAttachNotSupported;
-    }
-}
-
-fn attachNamespaceFd(fd: i32, nstype: u32) !void {
-    const res = linux.syscall2(.setns, @as(usize, @bitCast(@as(isize, fd))), nstype);
-    try checkErr(res, error.SetNsFailed);
-}
-
 export fn childFn(a: usize) u8 {
     const arg: *ChildProcessArgs = @ptrFromInt(a);
     std.posix.close(arg.pipe[1]);
@@ -311,22 +196,6 @@ export fn childFn(a: usize) u8 {
     return 0;
 }
 
-fn createUserRootMappings(self: *Container, pid: linux.pid_t) !void {
-    const uidmap_path = try std.fmt.allocPrint(self.allocator, "/proc/{}/uid_map", .{pid});
-    defer self.allocator.free(uidmap_path);
-    const gidmap_path = try std.fmt.allocPrint(self.allocator, "/proc/{}/gid_map", .{pid});
-    defer self.allocator.free(gidmap_path);
-
-    const uid_map = try std.fs.openFileAbsolute(uidmap_path, .{ .mode = .write_only });
-    defer uid_map.close();
-    const gid_map = try std.fs.openFileAbsolute(gidmap_path, .{ .mode = .write_only });
-    defer gid_map.close();
-
-    // map root inside user namespace to the "nobody" user and group outside the namespace
-    _ = try uid_map.write("0 65534 1");
-    _ = try gid_map.write("0 65534 1");
-}
-
 pub fn deinit(self: *Container) void {
     self.cgroup.deinit() catch |e| {
         log.err("cgroup deinit failed: {}", .{e});
@@ -334,33 +203,4 @@ pub fn deinit(self: *Container) void {
     if (self.net) |*net| {
         net.deinit() catch log.err("net deinit failed", .{});
     }
-}
-
-test "computeCloneFlags includes all namespace flags by default" {
-    const flags = computeCloneFlags(.{});
-    try std.testing.expect((flags & linux.CLONE.NEWUSER) != 0);
-    try std.testing.expect((flags & linux.CLONE.NEWNET) != 0);
-    try std.testing.expect((flags & linux.CLONE.NEWNS) != 0);
-    try std.testing.expect((flags & linux.CLONE.NEWPID) != 0);
-    try std.testing.expect((flags & linux.CLONE.NEWUTS) != 0);
-    try std.testing.expect((flags & linux.CLONE.NEWIPC) != 0);
-    try std.testing.expect((flags & c.SIGCHLD) != 0);
-}
-
-test "computeCloneFlags respects disabled namespaces" {
-    const flags = computeCloneFlags(.{
-        .net = false,
-        .mount = false,
-        .pid = false,
-        .uts = false,
-        .ipc = false,
-    });
-
-    try std.testing.expect((flags & linux.CLONE.NEWUSER) != 0);
-    try std.testing.expect((flags & c.SIGCHLD) != 0);
-    try std.testing.expect((flags & linux.CLONE.NEWNET) == 0);
-    try std.testing.expect((flags & linux.CLONE.NEWNS) == 0);
-    try std.testing.expect((flags & linux.CLONE.NEWPID) == 0);
-    try std.testing.expect((flags & linux.CLONE.NEWUTS) == 0);
-    try std.testing.expect((flags & linux.CLONE.NEWIPC) == 0);
 }
