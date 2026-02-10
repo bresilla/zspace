@@ -122,7 +122,7 @@ fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t) !void {
 
     try namespace.attach(self.namespace_fds);
 
-    if (self.process.new_session) {
+    if (self.process.new_session and !std.posix.isatty(std.posix.STDIN_FILENO)) {
         _ = std.posix.setsid() catch return error.SetSidFailed;
     }
     if (self.process.die_with_parent) {
