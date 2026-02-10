@@ -47,14 +47,30 @@ pub fn writeUserRootMappings(allocator: std.mem.Allocator, pid: linux.pid_t) !vo
     defer allocator.free(uidmap_path);
     const gidmap_path = try std.fmt.allocPrint(allocator, "/proc/{}/gid_map", .{pid});
     defer allocator.free(gidmap_path);
+    const setgroups_path = try std.fmt.allocPrint(allocator, "/proc/{}/setgroups", .{pid});
+    defer allocator.free(setgroups_path);
+
+    const uid = linux.getuid();
+    const gid = linux.getgid();
+
+    var uid_buf: [64]u8 = undefined;
+    var gid_buf: [64]u8 = undefined;
+    const uid_line = try std.fmt.bufPrint(&uid_buf, "0 {} 1\n", .{uid});
+    const gid_line = try std.fmt.bufPrint(&gid_buf, "0 {} 1\n", .{gid});
 
     const uid_map = try std.fs.openFileAbsolute(uidmap_path, .{ .mode = .write_only });
     defer uid_map.close();
+
+    if (std.fs.openFileAbsolute(setgroups_path, .{ .mode = .write_only })) |setgroups_file| {
+        defer setgroups_file.close();
+        _ = setgroups_file.write("deny\n") catch {};
+    } else |_| {}
+
     const gid_map = try std.fs.openFileAbsolute(gidmap_path, .{ .mode = .write_only });
     defer gid_map.close();
 
-    _ = try uid_map.write("0 65534 1");
-    _ = try gid_map.write("0 65534 1");
+    _ = try uid_map.write(uid_line);
+    _ = try gid_map.write(gid_line);
 }
 
 pub fn assertUserNsDisabled() !void {

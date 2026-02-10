@@ -110,7 +110,12 @@ pub fn spawn(self: *Container) !linux.pid_t {
         try waitForFd(fd);
     }
     if (self.isolation.user) {
-        namespace.writeUserRootMappings(self.allocator, @intCast(pid)) catch @panic("creating root user mapping failed");
+        namespace.writeUserRootMappings(self.allocator, @intCast(pid)) catch |err| {
+            std.posix.close(childp_args.pipe[1]);
+            std.posix.kill(@intCast(pid), std.posix.SIG.KILL) catch {};
+            _ = std.posix.waitpid(@intCast(pid), 0);
+            return err;
+        };
     }
 
     // signal done by writing to pipe
