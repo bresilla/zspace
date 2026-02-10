@@ -2,7 +2,10 @@ const std = @import("std");
 const log = std.log;
 const linux = std.os.linux;
 const checkErr = @import("utils.zig").checkErr;
-const c = @cImport(@cInclude("signal.h"));
+const c = @cImport({
+    @cInclude("signal.h");
+    @cInclude("sys/wait.h");
+});
 const Net = @import("network.zig");
 const Cgroup = @import("cgroup.zig");
 const Fs = @import("fs.zig");
@@ -67,7 +70,7 @@ fn sethostname(self: *Container) void {
 
 pub fn run(self: *Container) !linux.pid_t {
     const pid = try self.spawn();
-    try self.wait(pid);
+    _ = try self.wait(pid);
     return pid;
 }
 
@@ -112,12 +115,20 @@ pub fn spawn(self: *Container) !linux.pid_t {
     return @intCast(pid);
 }
 
-pub fn wait(self: *Container, pid: linux.pid_t) !void {
+pub fn wait(self: *Container, pid: linux.pid_t) !u8 {
     _ = self;
     const wait_res = std.posix.waitpid(pid, 0);
-    if (wait_res.status != 0) {
-        return error.CmdFailed;
+    const status = @as(c_int, @bitCast(wait_res.status));
+
+    if (c.WIFEXITED(status)) {
+        return @intCast(c.WEXITSTATUS(status));
     }
+    if (c.WIFSIGNALED(status)) {
+        const sig = c.WTERMSIG(status);
+        return @intCast((128 + sig) & 0xff);
+    }
+
+    return error.WaitFailed;
 }
 
 // initializes the container environment

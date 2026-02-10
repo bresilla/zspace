@@ -60,10 +60,10 @@ pub fn spawn(jail_config: JailConfig, allocator: std.mem.Allocator) !Session {
 pub fn wait(session: *Session) !RunOutcome {
     if (session.waited) return error.SessionAlreadyWaited;
 
-    try session.container.wait(session.pid);
+    const exit_code = try session.container.wait(session.pid);
     session.waited = true;
-    try status.emitExitedWithOptions(session.status, session.pid, 0);
-    return .{ .pid = session.pid, .exit_code = 0 };
+    try status.emitExitedWithOptions(session.status, session.pid, exit_code);
+    return .{ .pid = session.pid, .exit_code = exit_code };
 }
 
 fn waitForFd(fd: i32) !void {
