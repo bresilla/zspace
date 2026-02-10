@@ -220,6 +220,22 @@ pub const RunArgs = struct {
                 idx += 1;
                 if (idx >= expanded.len) return error.MissingValue;
                 try fs_actions.append(allocator, .{ .file = try parseFileData(expanded[idx]) });
+            } else if (eql(arg, "--overlay-src")) {
+                idx += 1;
+                if (idx >= expanded.len) return error.MissingValue;
+                try fs_actions.append(allocator, .{ .overlay_src = try parseOverlaySource(expanded[idx]) });
+            } else if (eql(arg, "--overlay")) {
+                idx += 1;
+                if (idx >= expanded.len) return error.MissingValue;
+                try fs_actions.append(allocator, .{ .overlay = try parseOverlay(expanded[idx]) });
+            } else if (eql(arg, "--tmp-overlay")) {
+                idx += 1;
+                if (idx >= expanded.len) return error.MissingValue;
+                try fs_actions.append(allocator, .{ .tmp_overlay = try parseTmpOverlay(expanded[idx]) });
+            } else if (eql(arg, "--ro-overlay")) {
+                idx += 1;
+                if (idx >= expanded.len) return error.MissingValue;
+                try fs_actions.append(allocator, .{ .ro_overlay = try parseRoOverlay(expanded[idx]) });
             } else {
                 return error.InvalidOption;
             }
@@ -418,6 +434,49 @@ pub const RunArgs = struct {
             .data = value[sep + 1 ..],
         };
     }
+
+    fn parseOverlaySource(value: []const u8) !config.OverlaySource {
+        var parts = std.mem.splitScalar(u8, value, ':');
+        const key = parts.next() orelse return error.InvalidOverlaySource;
+        const path = parts.next() orelse return error.InvalidOverlaySource;
+        if (parts.next() != null) return error.InvalidOverlaySource;
+        if (key.len == 0 or path.len == 0) return error.InvalidOverlaySource;
+        return .{ .key = key, .path = path };
+    }
+
+    fn parseOverlay(value: []const u8) !config.OverlayAction {
+        var parts = std.mem.splitScalar(u8, value, ':');
+        const source_key = parts.next() orelse return error.InvalidOverlay;
+        const upper = parts.next() orelse return error.InvalidOverlay;
+        const work = parts.next() orelse return error.InvalidOverlay;
+        const dest = parts.next() orelse return error.InvalidOverlay;
+        if (parts.next() != null) return error.InvalidOverlay;
+        if (source_key.len == 0 or upper.len == 0 or work.len == 0 or dest.len == 0) return error.InvalidOverlay;
+        return .{
+            .source_key = source_key,
+            .upper = upper,
+            .work = work,
+            .dest = dest,
+        };
+    }
+
+    fn parseTmpOverlay(value: []const u8) !config.TmpOverlayAction {
+        var parts = std.mem.splitScalar(u8, value, ':');
+        const source_key = parts.next() orelse return error.InvalidTmpOverlay;
+        const dest = parts.next() orelse return error.InvalidTmpOverlay;
+        if (parts.next() != null) return error.InvalidTmpOverlay;
+        if (source_key.len == 0 or dest.len == 0) return error.InvalidTmpOverlay;
+        return .{ .source_key = source_key, .dest = dest };
+    }
+
+    fn parseRoOverlay(value: []const u8) !config.RoOverlayAction {
+        var parts = std.mem.splitScalar(u8, value, ':');
+        const source_key = parts.next() orelse return error.InvalidRoOverlay;
+        const dest = parts.next() orelse return error.InvalidRoOverlay;
+        if (parts.next() != null) return error.InvalidRoOverlay;
+        if (source_key.len == 0 or dest.len == 0) return error.InvalidRoOverlay;
+        return .{ .source_key = source_key, .dest = dest };
+    }
 };
 
 pub const Args = union(enum) {
@@ -440,7 +499,7 @@ pub const help =
     \\  security flags: --no-new-privs --allow-new-privs --seccomp disabled|strict --seccomp-fd <fd> --cap-drop <num> --cap-add <num>
     \\  status flags: --json-status-fd <fd> --sync-fd <fd> --block-fd <fd> --userns-block-fd <fd> --lock-file <path>
     \\  loader flags: --args-fd <fd> (newline-separated extra args)
-    \\  fs flags: --bind SRC:DEST --ro-bind SRC:DEST --proc DEST --dev DEST --tmpfs DEST[:size=N,mode=OCT] --dir PATH[:MODE] --symlink TARGET:PATH --chmod PATH:MODE --remount-ro DEST --bind-data DEST:DATA --ro-bind-data DEST:DATA --file PATH:DATA
+    \\  fs flags: --bind SRC:DEST --ro-bind SRC:DEST --proc DEST --dev DEST --tmpfs DEST[:size=N,mode=OCT] --dir PATH[:MODE] --symlink TARGET:PATH --chmod PATH:MODE --remount-ro DEST --bind-data DEST:DATA --ro-bind-data DEST:DATA --file PATH:DATA --overlay-src KEY:PATH --overlay KEY:UPPER:WORK:DEST --tmp-overlay KEY:DEST --ro-overlay KEY:DEST
     \\  default command when omitted: /bin/sh
     \\ps
     \\doctor
