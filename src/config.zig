@@ -144,6 +144,13 @@ pub const ProcessOptions = struct {
     die_with_parent: bool = false,
 };
 
+pub const RuntimeOptions = struct {
+    uid: ?std.os.linux.uid_t = null,
+    gid: ?std.os.linux.gid_t = null,
+    hostname: ?[]const u8 = null,
+    as_pid_1: bool = false,
+};
+
 pub const StatusOptions = struct {
     pub const NamespaceIds = struct {
         user: ?u64 = null,
@@ -212,6 +219,7 @@ pub const JailConfig = struct {
     isolation: IsolationOptions = .{},
     namespace_fds: NamespaceFds = .{},
     process: ProcessOptions = .{},
+    runtime: RuntimeOptions = .{},
     security: SecurityOptions = .{},
     status: StatusOptions = .{},
     fs_actions: []const FsAction = &.{},
@@ -226,6 +234,7 @@ pub const ShellConfig = struct {
     isolation: IsolationOptions = .{},
     namespace_fds: NamespaceFds = .{},
     process: ProcessOptions = .{},
+    runtime: RuntimeOptions = .{},
     security: SecurityOptions = .{},
     status: StatusOptions = .{},
     fs_actions: []const FsAction = &.{},

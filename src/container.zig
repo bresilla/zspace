@@ -15,6 +15,7 @@ const JailConfig = @import("config.zig").JailConfig;
 const IsolationOptions = @import("config.zig").IsolationOptions;
 const NamespaceFds = @import("config.zig").NamespaceFds;
 const ProcessOptions = @import("config.zig").ProcessOptions;
+const RuntimeOptions = @import("config.zig").RuntimeOptions;
 const SecurityOptions = @import("config.zig").SecurityOptions;
 const StatusOptions = @import("config.zig").StatusOptions;
 
@@ -31,6 +32,7 @@ cmd: []const []const u8,
 isolation: IsolationOptions,
 namespace_fds: NamespaceFds,
 process: ProcessOptions,
+runtime: RuntimeOptions,
 security: SecurityOptions,
 status: StatusOptions,
 
@@ -47,6 +49,7 @@ pub fn init(run_args: JailConfig, allocator: std.mem.Allocator) !Container {
         .isolation = run_args.isolation,
         .namespace_fds = run_args.namespace_fds,
         .process = run_args.process,
+        .runtime = run_args.runtime,
         .security = run_args.security,
         .status = run_args.status,
         .net = if (run_args.isolation.net) try Net.init(allocator, run_args.name) else null,
@@ -65,7 +68,8 @@ fn initNetwork(self: *Container) !void {
 }
 
 fn sethostname(self: *Container) void {
-    _ = linux.syscall2(.sethostname, @intFromPtr(self.name.ptr), self.name.len);
+    const value = self.runtime.hostname orelse self.name;
+    _ = linux.syscall2(.sethostname, @intFromPtr(value.ptr), value.len);
 }
 
 pub fn run(self: *Container) !linux.pid_t {
@@ -81,8 +85,8 @@ pub fn spawn(self: *Container) !linux.pid_t {
     var childp_args = ChildProcessArgs{
         .container = self,
         .pipe = undefined,
-        .uid = if (self.isolation.user or self.namespace_fds.user != null) 0 else linux.getuid(),
-        .gid = if (self.isolation.user or self.namespace_fds.user != null) 0 else linux.getgid(),
+        .uid = self.runtime.uid orelse if (self.isolation.user or self.namespace_fds.user != null) 0 else linux.getuid(),
+        .gid = self.runtime.gid orelse if (self.isolation.user or self.namespace_fds.user != null) 0 else linux.getgid(),
     };
     try checkErr(linux.pipe(&childp_args.pipe), error.Pipe);
     var stack = try self.allocator.alloc(u8, 1024 * 1024);
@@ -159,11 +163,19 @@ export fn childFn(a: usize) u8 {
     }
 
     if (arg.container.isolation.pid) {
-        const code = arg.container.execAsPid1(arg.uid, arg.gid) catch |e| {
-            log.err("err: {}", .{e});
-            std.posix.exit(127);
-        };
-        std.posix.exit(code);
+        if (arg.container.runtime.as_pid_1) {
+            arg.container.execCmd(arg.uid, arg.gid) catch |e| {
+                log.err("pid1 cmd failed: {}", .{e});
+                std.posix.exit(127);
+            };
+            unreachable;
+        } else {
+            const code = arg.container.execAsPid1(arg.uid, arg.gid) catch |e| {
+                log.err("err: {}", .{e});
+                std.posix.exit(127);
+            };
+            std.posix.exit(code);
+        }
     }
 
     arg.container.execCmd(arg.uid, arg.gid) catch |e| {

@@ -53,6 +53,7 @@ pub const IsolationOptions = config.IsolationOptions;
 pub const NamespaceFds = config.NamespaceFds;
 pub const ResourceLimits = config.ResourceLimits;
 pub const ProcessOptions = config.ProcessOptions;
+pub const RuntimeOptions = config.RuntimeOptions;
 pub const SecurityOptions = config.SecurityOptions;
 pub const SeccompMode = config.SecurityOptions.SeccompMode;
 pub const SeccompInstruction = config.SecurityOptions.SeccompInstruction;
@@ -106,6 +107,7 @@ pub fn launch_shell(shell_config: ShellConfig, allocator: std.mem.Allocator) Lau
         .isolation = shell_config.isolation,
         .namespace_fds = shell_config.namespace_fds,
         .process = shell_config.process,
+        .runtime = shell_config.runtime,
         .security = shell_config.security,
         .status = shell_config.status,
         .fs_actions = shell_config.fs_actions,
@@ -163,6 +165,17 @@ pub fn validate(jail_config: JailConfig) ValidationError!void {
     }
     if (jail_config.process.chdir) |chdir_path| {
         if (chdir_path.len == 0) return error.InvalidChdir;
+    }
+    if ((jail_config.runtime.uid != null or jail_config.runtime.gid != null) and
+        !jail_config.isolation.user and jail_config.namespace_fds.user == null)
+    {
+        return error.IdentityRequiresUserNamespace;
+    }
+    if (jail_config.runtime.hostname) |hostname| {
+        if (hostname.len == 0) return error.InvalidHostname;
+    }
+    if (jail_config.runtime.as_pid_1 and !jail_config.isolation.pid) {
+        return error.AsPid1RequiresPidNamespace;
     }
 
     if (!jail_config.isolation.mount and jail_config.fs_actions.len > 0) {
@@ -477,6 +490,41 @@ test "validate rejects invalid fs size modifier" {
     };
 
     try std.testing.expectError(error.InvalidFsSize, validate(cfg));
+}
+
+test "validate requires user namespace for explicit uid/gid" {
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .isolation = .{ .user = false },
+        .runtime = .{ .uid = 1000 },
+    };
+
+    try std.testing.expectError(error.IdentityRequiresUserNamespace, validate(cfg));
+}
+
+test "validate rejects empty runtime hostname" {
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .runtime = .{ .hostname = "" },
+    };
+
+    try std.testing.expectError(error.InvalidHostname, validate(cfg));
+}
+
+test "validate requires pid namespace for as_pid_1" {
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .isolation = .{ .pid = false },
+        .runtime = .{ .as_pid_1 = true },
+    };
+
+    try std.testing.expectError(error.AsPid1RequiresPidNamespace, validate(cfg));
 }
 
 test "validate rejects invalid fd-based fs action" {

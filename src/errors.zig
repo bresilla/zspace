@@ -37,6 +37,9 @@ pub const ValidationError = error{
     DisableUserNsRequiresUserNs,
     PidNsAttachRequiresUnsharePid,
     UserNs2RequiresUserNs,
+    IdentityRequiresUserNamespace,
+    InvalidHostname,
+    AsPid1RequiresPidNamespace,
 };
 
 pub const SpawnError = ValidationError || error{
