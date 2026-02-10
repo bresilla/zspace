@@ -77,6 +77,16 @@ pub const RoOverlayAction = struct {
     dest: []const u8,
 };
 
+pub const DataBindAction = struct {
+    dest: []const u8,
+    data: []const u8,
+};
+
+pub const FileAction = struct {
+    path: []const u8,
+    data: []const u8,
+};
+
 pub const FsAction = union(enum) {
     bind: MountPair,
     ro_bind: MountPair,
@@ -91,6 +101,9 @@ pub const FsAction = union(enum) {
     overlay: OverlayAction,
     tmp_overlay: TmpOverlayAction,
     ro_overlay: RoOverlayAction,
+    bind_data: DataBindAction,
+    ro_bind_data: DataBindAction,
+    file: FileAction,
 };
 
 pub const EnvironmentEntry = struct {

@@ -39,6 +39,7 @@ fn executeActions(self: *Fs) !void {
     var overlay_sources = std.ArrayList(OverlaySource).empty;
     defer overlay_sources.deinit(std.heap.page_allocator);
     var tmp_overlay_counter: usize = 0;
+    var data_bind_counter: usize = 0;
 
     for (self.actions) |action| {
         switch (action) {
@@ -140,8 +141,52 @@ fn executeActions(self: *Fs) !void {
                 const opts = try std.fmt.bufPrint(&opts_buf, "lowerdir={s}", .{lower});
                 try mountPath("overlay", o.dest, "overlay", linux.MS.RDONLY, opts, error.MountOverlay);
             },
+            .bind_data => |b| {
+                const src = try writeDataSource(b.data, data_bind_counter);
+                defer std.heap.page_allocator.free(src);
+
+                try ensurePath(b.dest);
+                const flags = linux.MS.BIND | linux.MS.REC;
+                try mountPath(src, b.dest, null, flags, null, error.BindMount);
+                data_bind_counter += 1;
+            },
+            .ro_bind_data => |b| {
+                const src = try writeDataSource(b.data, data_bind_counter);
+                defer std.heap.page_allocator.free(src);
+
+                try ensurePath(b.dest);
+                const bind_flags = linux.MS.BIND | linux.MS.REC;
+                try mountPath(src, b.dest, null, bind_flags, null, error.BindMount);
+
+                const remount_flags = linux.MS.BIND | linux.MS.REMOUNT | linux.MS.RDONLY;
+                try mountPath(null, b.dest, null, remount_flags, null, error.RemountReadOnly);
+                data_bind_counter += 1;
+            },
+            .file => |f| {
+                const parent = std.fs.path.dirname(f.path);
+                if (parent) |p| {
+                    try ensurePath(p);
+                }
+
+                var file = try std.fs.cwd().createFile(trimPath(f.path), .{ .truncate = true });
+                defer file.close();
+                try file.writeAll(f.data);
+            },
         }
     }
+}
+
+fn writeDataSource(data: []const u8, index: usize) ![]const u8 {
+    const path = try std.fmt.allocPrint(std.heap.page_allocator, "/tmp/.voidbox-data/{d}", .{index});
+    const parent = std.fs.path.dirname(path);
+    if (parent) |p| {
+        try ensurePath(p);
+    }
+
+    var file = try std.fs.cwd().createFile(trimPath(path), .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(data);
+    return path;
 }
 
 fn findOverlaySource(sources: []const OverlaySource, key: []const u8) ?[]const u8 {

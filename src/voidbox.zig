@@ -27,6 +27,8 @@ pub const OverlaySource = config.OverlaySource;
 pub const OverlayAction = config.OverlayAction;
 pub const TmpOverlayAction = config.TmpOverlayAction;
 pub const RoOverlayAction = config.RoOverlayAction;
+pub const DataBindAction = config.DataBindAction;
+pub const FileAction = config.FileAction;
 pub const RunOutcome = config.RunOutcome;
 pub const default_shell_config = config.default_shell_config;
 pub const DoctorReport = doctor.DoctorReport;
@@ -244,6 +246,15 @@ fn validateFsAction(action: FsAction) !void {
         .ro_overlay => |o| {
             if (o.source_key.len == 0) return error.InvalidOverlaySourceKey;
             if (o.dest.len == 0) return error.InvalidFsDestination;
+        },
+        .bind_data => |b| {
+            if (b.dest.len == 0) return error.InvalidFsDestination;
+        },
+        .ro_bind_data => |b| {
+            if (b.dest.len == 0) return error.InvalidFsDestination;
+        },
+        .file => |f| {
+            if (f.path.len == 0) return error.InvalidFsDestination;
         },
     }
 }

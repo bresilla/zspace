@@ -208,6 +208,18 @@ pub const RunArgs = struct {
                 idx += 1;
                 if (idx >= expanded.len) return error.MissingValue;
                 try fs_actions.append(allocator, .{ .remount_ro = expanded[idx] });
+            } else if (eql(arg, "--bind-data")) {
+                idx += 1;
+                if (idx >= expanded.len) return error.MissingValue;
+                try fs_actions.append(allocator, .{ .bind_data = try parseDataBind(expanded[idx]) });
+            } else if (eql(arg, "--ro-bind-data")) {
+                idx += 1;
+                if (idx >= expanded.len) return error.MissingValue;
+                try fs_actions.append(allocator, .{ .ro_bind_data = try parseDataBind(expanded[idx]) });
+            } else if (eql(arg, "--file")) {
+                idx += 1;
+                if (idx >= expanded.len) return error.MissingValue;
+                try fs_actions.append(allocator, .{ .file = try parseFileData(expanded[idx]) });
             } else {
                 return error.InvalidOption;
             }
@@ -388,6 +400,24 @@ pub const RunArgs = struct {
         if (path.len == 0) return error.InvalidChmod;
         return .{ .path = path, .mode = try std.fmt.parseInt(u32, mode, 8) };
     }
+
+    fn parseDataBind(value: []const u8) !config.DataBindAction {
+        const sep = std.mem.indexOfScalar(u8, value, ':') orelse return error.InvalidDataBind;
+        if (sep == 0) return error.InvalidDataBind;
+        return .{
+            .dest = value[0..sep],
+            .data = value[sep + 1 ..],
+        };
+    }
+
+    fn parseFileData(value: []const u8) !config.FileAction {
+        const sep = std.mem.indexOfScalar(u8, value, ':') orelse return error.InvalidFileAction;
+        if (sep == 0) return error.InvalidFileAction;
+        return .{
+            .path = value[0..sep],
+            .data = value[sep + 1 ..],
+        };
+    }
 };
 
 pub const Args = union(enum) {
@@ -410,7 +440,7 @@ pub const help =
     \\  security flags: --no-new-privs --allow-new-privs --seccomp disabled|strict --seccomp-fd <fd> --cap-drop <num> --cap-add <num>
     \\  status flags: --json-status-fd <fd> --sync-fd <fd> --block-fd <fd> --userns-block-fd <fd> --lock-file <path>
     \\  loader flags: --args-fd <fd> (newline-separated extra args)
-    \\  fs flags: --bind SRC:DEST --ro-bind SRC:DEST --proc DEST --dev DEST --tmpfs DEST[:size=N,mode=OCT] --dir PATH[:MODE] --symlink TARGET:PATH --chmod PATH:MODE --remount-ro DEST
+    \\  fs flags: --bind SRC:DEST --ro-bind SRC:DEST --proc DEST --dev DEST --tmpfs DEST[:size=N,mode=OCT] --dir PATH[:MODE] --symlink TARGET:PATH --chmod PATH:MODE --remount-ro DEST --bind-data DEST:DATA --ro-bind-data DEST:DATA --file PATH:DATA
     \\  default command when omitted: /bin/sh
     \\ps
     \\doctor
