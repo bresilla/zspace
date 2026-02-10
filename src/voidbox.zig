@@ -1,3 +1,45 @@
+//! voidbox is a library-first Linux namespace jail toolkit.
+//!
+//! Embedder quick start:
+//!
+//! ```zig
+//! const std = @import("std");
+//! const voidbox = @import("voidbox");
+//!
+//! pub fn main() !void {
+//!     const allocator = std.heap.page_allocator;
+//!     var cfg = voidbox.default_shell_config("/");
+//!     cfg.name = "dev-shell";
+//!     cfg.shell_args = &.{ "-c", "echo hello from jail" };
+//!     cfg.isolation = .{ .user = true, .net = false, .mount = false, .pid = false, .uts = false, .ipc = false };
+//!     _ = try voidbox.launch_shell(cfg, allocator);
+//! }
+//! ```
+//!
+//! Event callback quick start:
+//!
+//! ```zig
+//! const std = @import("std");
+//! const voidbox = @import("voidbox");
+//!
+//! fn onEvent(ctx: ?*anyopaque, event: voidbox.StatusEvent) !void {
+//!     _ = ctx;
+//!     _ = event;
+//! }
+//!
+//! pub fn main() !void {
+//!     const allocator = std.heap.page_allocator;
+//!     const cfg: voidbox.JailConfig = .{
+//!         .name = "run-once",
+//!         .rootfs_path = "/",
+//!         .cmd = &.{ "/bin/sh", "-c", "exit 0" },
+//!         .status = .{ .on_event = onEvent },
+//!         .isolation = .{ .user = true, .net = false, .mount = false, .pid = false, .uts = false, .ipc = false },
+//!     };
+//!     _ = try voidbox.launch(cfg, allocator);
+//! }
+//! ```
+
 const std = @import("std");
 const config = @import("config.zig");
 const doctor = @import("doctor.zig");

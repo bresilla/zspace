@@ -52,4 +52,34 @@ pub fn build(b: *std.Build) !void {
     // running the unit tests.
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_exe_unit_tests.step);
+
+    const ex_shell_module = b.createModule(.{
+        .root_source_file = b.path("examples/embedder_launch_shell.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    ex_shell_module.addImport("voidbox", voidbox_module);
+
+    const ex_shell = b.addExecutable(.{
+        .name = "example_embedder_launch_shell",
+        .root_module = ex_shell_module,
+    });
+
+    const ex_events_module = b.createModule(.{
+        .root_source_file = b.path("examples/embedder_events.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    ex_events_module.addImport("voidbox", voidbox_module);
+
+    const ex_events = b.addExecutable(.{
+        .name = "example_embedder_events",
+        .root_module = ex_events_module,
+    });
+
+    const examples_step = b.step("examples", "Compile embedder examples");
+    examples_step.dependOn(&ex_shell.step);
+    examples_step.dependOn(&ex_events.step);
 }
