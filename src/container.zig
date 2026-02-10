@@ -11,6 +11,8 @@ const IsolationOptions = @import("config.zig").IsolationOptions;
 const ProcessOptions = @import("config.zig").ProcessOptions;
 const SecurityOptions = @import("config.zig").SecurityOptions;
 
+const LINUX_CAPABILITY_VERSION_3 = 0x20080522;
+
 const ChildProcessArgs = struct {
     container: *Container,
     pipe: [2]i32,
@@ -121,9 +123,7 @@ fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t) !void {
     if (self.security.no_new_privs) {
         try checkErr(linux.prctl(@intFromEnum(linux.PR.SET_NO_NEW_PRIVS), 1, 0, 0, 0), error.NoNewPrivsFailed);
     }
-    for (self.security.cap_drop) |cap| {
-        try checkErr(linux.prctl(@intFromEnum(linux.PR.CAPBSET_DROP), cap, 0, 0, 0), error.CapabilityDropFailed);
-    }
+    try self.applyCapabilities();
     if (self.security.seccomp_mode == .strict) {
         try checkErr(linux.prctl(@intFromEnum(linux.PR.SET_SECCOMP), 1, 0, 0, 0), error.SeccompFailed);
     }
@@ -162,6 +162,40 @@ fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t) !void {
     }
 
     std.process.execve(self.allocator, exec_cmd, &env_map) catch return error.CmdFailed;
+}
+
+fn applyCapabilities(self: *Container) !void {
+    var cap_hdr = linux.cap_user_header_t{
+        .version = LINUX_CAPABILITY_VERSION_3,
+        .pid = 0,
+    };
+    var cap_data = [_]linux.cap_user_data_t{
+        .{ .effective = 0, .permitted = 0, .inheritable = 0 },
+        .{ .effective = 0, .permitted = 0, .inheritable = 0 },
+    };
+
+    try checkErr(linux.capget(&cap_hdr, &cap_data[0]), error.CapabilityReadFailed);
+
+    for (self.security.cap_add) |cap| {
+        const index = linux.CAP.TO_INDEX(cap);
+        const mask = linux.CAP.TO_MASK(cap);
+        cap_data[index].effective |= mask;
+        cap_data[index].permitted |= mask;
+    }
+
+    for (self.security.cap_drop) |cap| {
+        const index = linux.CAP.TO_INDEX(cap);
+        const mask = linux.CAP.TO_MASK(cap);
+        cap_data[index].effective &= ~mask;
+        cap_data[index].permitted &= ~mask;
+        cap_data[index].inheritable &= ~mask;
+    }
+
+    try checkErr(linux.capset(&cap_hdr, &cap_data[0]), error.CapabilitySetFailed);
+
+    for (self.security.cap_drop) |cap| {
+        try checkErr(linux.prctl(@intFromEnum(linux.PR.CAPBSET_DROP), cap, 0, 0, 0), error.CapabilityDropFailed);
+    }
 }
 
 export fn childFn(a: usize) u8 {

@@ -117,8 +117,8 @@ pub fn validate(jail_config: JailConfig) !void {
         if (entry.key.len == 0) return error.InvalidSetEnvKey;
     }
 
-    if (jail_config.security.cap_add.len > 0) {
-        return error.CapabilityAddNotSupportedYet;
+    for (jail_config.security.cap_add) |cap| {
+        if (!std.os.linux.CAP.valid(cap)) return error.InvalidCapability;
     }
     for (jail_config.security.cap_drop) |cap| {
         if (!std.os.linux.CAP.valid(cap)) return error.InvalidCapability;
@@ -319,15 +319,29 @@ test "validate rejects invalid dropped capability" {
     try std.testing.expectError(error.InvalidCapability, validate(cfg));
 }
 
-test "validate rejects unsupported capability add" {
+test "validate rejects invalid added capability" {
     const cfg: JailConfig = .{
         .name = "test",
         .rootfs_path = "/tmp/rootfs",
         .cmd = &.{"/bin/sh"},
-        .security = .{ .cap_add = &.{1} },
+        .security = .{ .cap_add = &.{255} },
     };
 
-    try std.testing.expectError(error.CapabilityAddNotSupportedYet, validate(cfg));
+    try std.testing.expectError(error.InvalidCapability, validate(cfg));
+}
+
+test "validate accepts capability add and drop values" {
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .security = .{
+            .cap_add = &.{std.os.linux.CAP.NET_RAW},
+            .cap_drop = &.{std.os.linux.CAP.SYS_ADMIN},
+        },
+    };
+
+    try validate(cfg);
 }
 
 test "validate rejects seccomp filter fds for now" {
