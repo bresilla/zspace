@@ -87,12 +87,7 @@ pub fn spawn(self: *Container) !linux.pid_t {
     var stack = try self.allocator.alloc(u8, 1024 * 1024);
     var ctid: i32 = 0;
     var ptid: i32 = 0;
-    var clone_flags: u32 = linux.CLONE.NEWUSER | c.SIGCHLD;
-    if (self.isolation.net) clone_flags |= linux.CLONE.NEWNET;
-    if (self.isolation.mount) clone_flags |= linux.CLONE.NEWNS;
-    if (self.isolation.pid) clone_flags |= linux.CLONE.NEWPID;
-    if (self.isolation.uts) clone_flags |= linux.CLONE.NEWUTS;
-    if (self.isolation.ipc) clone_flags |= linux.CLONE.NEWIPC;
+    const clone_flags = computeCloneFlags(self.isolation);
     const pid = linux.clone(childFn, @intFromPtr(&stack[0]) + stack.len, clone_flags, @intFromPtr(&childp_args), &ptid, 0, &ctid);
     try checkErr(pid, error.CloneFailed);
     std.posix.close(childp_args.pipe[0]);
@@ -115,6 +110,16 @@ pub fn spawn(self: *Container) !linux.pid_t {
     _ = try std.posix.write(childp_args.pipe[1], &buff);
 
     return @intCast(pid);
+}
+
+fn computeCloneFlags(isolation: IsolationOptions) u32 {
+    var flags: u32 = linux.CLONE.NEWUSER | c.SIGCHLD;
+    if (isolation.net) flags |= linux.CLONE.NEWNET;
+    if (isolation.mount) flags |= linux.CLONE.NEWNS;
+    if (isolation.pid) flags |= linux.CLONE.NEWPID;
+    if (isolation.uts) flags |= linux.CLONE.NEWUTS;
+    if (isolation.ipc) flags |= linux.CLONE.NEWIPC;
+    return flags;
 }
 
 pub fn wait(self: *Container, pid: linux.pid_t) !void {
@@ -329,4 +334,33 @@ pub fn deinit(self: *Container) void {
     if (self.net) |*net| {
         net.deinit() catch log.err("net deinit failed", .{});
     }
+}
+
+test "computeCloneFlags includes all namespace flags by default" {
+    const flags = computeCloneFlags(.{});
+    try std.testing.expect((flags & linux.CLONE.NEWUSER) != 0);
+    try std.testing.expect((flags & linux.CLONE.NEWNET) != 0);
+    try std.testing.expect((flags & linux.CLONE.NEWNS) != 0);
+    try std.testing.expect((flags & linux.CLONE.NEWPID) != 0);
+    try std.testing.expect((flags & linux.CLONE.NEWUTS) != 0);
+    try std.testing.expect((flags & linux.CLONE.NEWIPC) != 0);
+    try std.testing.expect((flags & c.SIGCHLD) != 0);
+}
+
+test "computeCloneFlags respects disabled namespaces" {
+    const flags = computeCloneFlags(.{
+        .net = false,
+        .mount = false,
+        .pid = false,
+        .uts = false,
+        .ipc = false,
+    });
+
+    try std.testing.expect((flags & linux.CLONE.NEWUSER) != 0);
+    try std.testing.expect((flags & c.SIGCHLD) != 0);
+    try std.testing.expect((flags & linux.CLONE.NEWNET) == 0);
+    try std.testing.expect((flags & linux.CLONE.NEWNS) == 0);
+    try std.testing.expect((flags & linux.CLONE.NEWPID) == 0);
+    try std.testing.expect((flags & linux.CLONE.NEWUTS) == 0);
+    try std.testing.expect((flags & linux.CLONE.NEWIPC) == 0);
 }
