@@ -6,7 +6,8 @@ const c = @cImport(@cInclude("signal.h"));
 const Net = @import("net.zig");
 const Cgroup = @import("cgroup.zig");
 const Fs = @import("fs.zig");
-const RunArgs = @import("args.zig").RunArgs;
+const JailConfig = @import("config.zig").JailConfig;
+const IsolationOptions = @import("config.zig").IsolationOptions;
 
 const ChildProcessArgs = struct {
     container: *Container,
@@ -18,36 +19,39 @@ const ChildProcessArgs = struct {
 const Container = @This();
 name: []const u8,
 cmd: []const []const u8,
+isolation: IsolationOptions,
 
 fs: Fs,
-net: Net,
+net: ?Net,
 cgroup: Cgroup,
 allocator: std.mem.Allocator,
 
-pub fn init(run_args: RunArgs, allocator: std.mem.Allocator) !Container {
+pub fn init(run_args: JailConfig, allocator: std.mem.Allocator) !Container {
     return .{
         .name = run_args.name,
         .fs = Fs.init(run_args.rootfs_path),
         .cmd = run_args.cmd,
-
-        .net = try Net.init(allocator, run_args.name),
+        .isolation = run_args.isolation,
+        .net = if (run_args.isolation.net) try Net.init(allocator, run_args.name) else null,
         .allocator = allocator,
         .cgroup = try Cgroup.init(run_args.name, run_args.resources, allocator),
     };
 }
 
 fn initNetwork(self: *Container) !void {
-    try self.net.enableNat();
-    try self.net.setUpBridge();
-    try self.net.createVethPair();
-    try self.net.setupDnsResolverConfig(self.fs.rootfs);
+    if (self.net) |*net| {
+        try net.enableNat();
+        try net.setUpBridge();
+        try net.createVethPair();
+        try net.setupDnsResolverConfig(self.fs.rootfs);
+    }
 }
 
 fn sethostname(self: *Container) void {
     _ = linux.syscall2(.sethostname, @intFromPtr(self.name.ptr), self.name.len);
 }
 
-pub fn run(self: *Container) !void {
+pub fn run(self: *Container) !linux.pid_t {
     // setup network virtual interfaces and namespace
     try self.initNetwork();
 
@@ -56,14 +60,21 @@ pub fn run(self: *Container) !void {
     var stack = try self.allocator.alloc(u8, 1024 * 1024);
     var ctid: i32 = 0;
     var ptid: i32 = 0;
-    const clone_flags: u32 = linux.CLONE.NEWNET | linux.CLONE.NEWNS | linux.CLONE.NEWPID | linux.CLONE.NEWUTS | linux.CLONE.NEWIPC | linux.CLONE.NEWUSER | c.SIGCHLD;
+    var clone_flags: u32 = linux.CLONE.NEWUSER | c.SIGCHLD;
+    if (self.isolation.net) clone_flags |= linux.CLONE.NEWNET;
+    if (self.isolation.mount) clone_flags |= linux.CLONE.NEWNS;
+    if (self.isolation.pid) clone_flags |= linux.CLONE.NEWPID;
+    if (self.isolation.uts) clone_flags |= linux.CLONE.NEWUTS;
+    if (self.isolation.ipc) clone_flags |= linux.CLONE.NEWIPC;
     const pid = linux.clone(childFn, @intFromPtr(&stack[0]) + stack.len, clone_flags, @intFromPtr(&childp_args), &ptid, 0, &ctid);
     try checkErr(pid, error.CloneFailed);
     std.posix.close(childp_args.pipe[0]);
 
     // move one of the veth pairs to
     // the child process network namespace
-    try self.net.moveVethToNs(@intCast(pid));
+    if (self.net) |*net| {
+        try net.moveVethToNs(@intCast(pid));
+    }
     // enter container cgroup
     try self.cgroup.enterCgroup(@intCast(pid));
     self.createUserRootMappings(@intCast(pid)) catch @panic("creating root user mapping failed");
@@ -76,6 +87,8 @@ pub fn run(self: *Container) !void {
     if (wait_res.status != 0) {
         return error.CmdFailed;
     }
+
+    return @intCast(pid);
 }
 
 // initializes the container environment
@@ -85,8 +98,10 @@ fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t) !void {
     try checkErr(linux.setregid(gid, gid), error.GID);
 
     self.sethostname();
-    try self.fs.setup();
-    try self.net.setupContainerVethIf();
+    try self.fs.setup(self.isolation.mount);
+    if (self.net) |*net| {
+        try net.setupContainerVethIf();
+    }
 
     std.process.execv(self.allocator, self.cmd) catch return error.CmdFailed;
 }
@@ -128,5 +143,7 @@ pub fn deinit(self: *Container) void {
     self.cgroup.deinit() catch |e| {
         log.err("cgroup deinit failed: {}", .{e});
     };
-    self.net.deinit() catch log.err("net deinit failed", .{});
+    if (self.net) |*net| {
+        net.deinit() catch log.err("net deinit failed", .{});
+    }
 }

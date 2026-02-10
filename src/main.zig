@@ -1,10 +1,7 @@
 const std = @import("std");
-const log = std.log;
-const linux = std.os.linux;
-const Container = @import("container.zig");
 const args = @import("args.zig");
 const ps = @import("ps.zig");
-const utils = @import("utils.zig");
+const voidbox = @import("voidbox.zig");
 
 pub fn main() !void {
     var arena_allocator = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -13,10 +10,24 @@ pub fn main() !void {
 
     switch (cmd) {
         .run => |r| {
-            try zspaceInit();
-            var container = try Container.init(r, allocator);
-            defer container.deinit();
-            try container.run();
+            const config: voidbox.JailConfig = .{
+                .name = r.name,
+                .rootfs_path = r.rootfs_path,
+                .cmd = r.cmd,
+                .resources = .{
+                    .mem = r.resources.mem,
+                    .cpu = r.resources.cpu,
+                    .pids = r.resources.pids,
+                },
+                .isolation = .{
+                    .net = r.isolation.net,
+                    .mount = r.isolation.mount,
+                    .pid = r.isolation.pid,
+                    .uts = r.isolation.uts,
+                    .ipc = r.isolation.ipc,
+                },
+            };
+            _ = try voidbox.launch(config, allocator);
         },
         .help => {
             const stdout = std.fs.File.stdout().deprecatedWriter();
@@ -31,19 +42,4 @@ pub fn main() !void {
             }
         },
     }
-}
-
-pub fn zspaceInit() !void {
-    _ = try utils.createDirIfNotExists("/var/run/zspace");
-    _ = try utils.createDirIfNotExists("/var/run/zspace/containers");
-    _ = try utils.createDirIfNotExists("/var/run/zspace/containers/netns");
-    const path = utils.CGROUP_PATH ++ "zspace/";
-    if (!try utils.createDirIfNotExists(path)) return;
-
-    // setup root cgroup
-    const root_cgroup = path ++ "cgroup.subtree_control";
-    var root_cgroup_file = try std.fs.openFileAbsolute(root_cgroup, .{ .mode = .write_only });
-    defer root_cgroup_file.close();
-    _ = try root_cgroup_file.write("+cpu +memory +pids"); // enable cpu, mem, and pid controllers in the root cgroup
-
 }

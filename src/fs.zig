@@ -10,9 +10,11 @@ pub fn init(rootfs: []const u8) Fs {
     return .{ .rootfs = rootfs };
 }
 
-pub fn setup(self: *Fs) !void {
+pub fn setup(self: *Fs, mount_fs: bool) !void {
     try checkErr(linux.chroot(@ptrCast(self.rootfs)), error.Chroot);
     try checkErr(linux.chdir("/"), error.Chdir);
+
+    if (!mount_fs) return;
 
     // TODO: mount more filesystems
     // from list: https://github.com/opencontainers/runtime-spec/blob/main/config-linux.md
