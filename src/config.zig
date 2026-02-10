@@ -143,6 +143,7 @@ pub const StatusOptions = struct {
 
     pub const EventKind = enum {
         spawned,
+        setup_finished,
         exited,
     };
 
@@ -157,6 +158,7 @@ pub const StatusOptions = struct {
     pub const EventCallback = *const fn (ctx: ?*anyopaque, event: Event) anyerror!void;
 
     json_status_fd: ?i32 = null,
+    info_fd: ?i32 = null,
     sync_fd: ?i32 = null,
     block_fd: ?i32 = null,
     userns_block_fd: ?i32 = null,

@@ -52,16 +52,61 @@ pub fn emitExitedWithOptions(options: StatusOptions, pid: std.posix.pid_t, exit_
     try emitEvent(options, event);
 }
 
+pub fn emitSetupFinishedWithOptions(options: StatusOptions, pid: std.posix.pid_t, ns_ids: NamespaceIds) !void {
+    const event: StatusOptions.Event = .{
+        .kind = .setup_finished,
+        .pid = pid,
+        .timestamp = std.time.timestamp(),
+        .ns_ids = ns_ids,
+    };
+    try emitEvent(options, event);
+}
+
 fn emitEvent(options: StatusOptions, event: StatusOptions.Event) !void {
     if (options.on_event) |cb| {
         try cb(options.callback_ctx, event);
     }
 
+    if (options.info_fd) |fd| {
+        try emitInfo(fd, event);
+    }
+
     if (options.json_status_fd) |fd| {
         switch (event.kind) {
             .spawned => try emitSpawned(fd, event.pid, event.ns_ids),
+            .setup_finished => try emitSetupFinished(fd, event.pid, event.ns_ids),
             .exited => try emitExited(fd, event.pid, event.exit_code orelse 0),
         }
+    }
+}
+
+fn emitSetupFinished(fd: i32, pid: std.posix.pid_t, ns_ids: NamespaceIds) !void {
+    const ts = std.time.timestamp();
+    var file = std.fs.File{ .handle = fd };
+    var writer = file.deprecatedWriter();
+
+    try writer.print("{{\"event\":\"setup_finished\",\"pid\":{},\"ts\":{},\"ns\":{{", .{ pid, ts });
+    try writeOptionalU64(writer, "user", ns_ids.user);
+    try writer.print(",", .{});
+    try writeOptionalU64(writer, "pid", ns_ids.pid);
+    try writer.print(",", .{});
+    try writeOptionalU64(writer, "net", ns_ids.net);
+    try writer.print(",", .{});
+    try writeOptionalU64(writer, "mount", ns_ids.mount);
+    try writer.print(",", .{});
+    try writeOptionalU64(writer, "uts", ns_ids.uts);
+    try writer.print(",", .{});
+    try writeOptionalU64(writer, "ipc", ns_ids.ipc);
+    try writer.print("}}}}\n", .{});
+}
+
+fn emitInfo(fd: i32, event: StatusOptions.Event) !void {
+    var file = std.fs.File{ .handle = fd };
+    var writer = file.deprecatedWriter();
+    switch (event.kind) {
+        .spawned => try writer.print("event=spawned pid={} ts={}\n", .{ event.pid, event.timestamp }),
+        .setup_finished => try writer.print("event=setup_finished pid={} ts={}\n", .{ event.pid, event.timestamp }),
+        .exited => try writer.print("event=exited pid={} exit_code={} ts={}\n", .{ event.pid, event.exit_code orelse 0, event.timestamp }),
     }
 }
 
@@ -125,7 +170,7 @@ test "emitEvent invokes callback sink" {
         .callback_ctx = &ctx,
     };
 
-    try emitExitedWithOptions(options, 1234, 0);
+    try emitSetupFinishedWithOptions(options, 1234, .{});
     try std.testing.expect(ctx.called);
-    try std.testing.expectEqual(StatusOptions.EventKind.exited, ctx.saw_kind.?);
+    try std.testing.expectEqual(StatusOptions.EventKind.setup_finished, ctx.saw_kind.?);
 }

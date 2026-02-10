@@ -45,6 +45,7 @@ pub fn spawn(jail_config: JailConfig, allocator: std.mem.Allocator) !Session {
 
     const ns_ids = status.queryNamespaceIds(pid) catch status.NamespaceIds{};
     try status.emitSpawnedWithOptions(jail_config.status, pid, ns_ids);
+    try status.emitSetupFinishedWithOptions(jail_config.status, pid, ns_ids);
     if (jail_config.status.sync_fd) |fd| {
         try signalFd(fd);
     }

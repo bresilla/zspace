@@ -176,6 +176,9 @@ pub fn validate(jail_config: JailConfig) ValidationError!void {
     if (jail_config.status.json_status_fd) |fd| {
         if (fd < 0) return error.InvalidStatusFd;
     }
+    if (jail_config.status.info_fd) |fd| {
+        if (fd < 0) return error.InvalidStatusFd;
+    }
     if (jail_config.status.sync_fd) |fd| {
         if (fd < 0) return error.InvalidSyncFd;
     }
@@ -496,6 +499,17 @@ test "validate rejects invalid status fd" {
         .rootfs_path = "/tmp/rootfs",
         .cmd = &.{"/bin/sh"},
         .status = .{ .json_status_fd = -1 },
+    };
+
+    try std.testing.expectError(error.InvalidStatusFd, validate(cfg));
+}
+
+test "validate rejects invalid info fd" {
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .status = .{ .info_fd = -1 },
     };
 
     try std.testing.expectError(error.InvalidStatusFd, validate(cfg));
