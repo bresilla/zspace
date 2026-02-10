@@ -14,18 +14,10 @@ pub fn main() !void {
                 .name = r.name,
                 .rootfs_path = r.rootfs_path,
                 .cmd = r.cmd,
-                .resources = .{
-                    .mem = r.resources.mem,
-                    .cpu = r.resources.cpu,
-                    .pids = r.resources.pids,
-                },
-                .isolation = .{
-                    .net = r.isolation.net,
-                    .mount = r.isolation.mount,
-                    .pid = r.isolation.pid,
-                    .uts = r.isolation.uts,
-                    .ipc = r.isolation.ipc,
-                },
+                .resources = r.resources,
+                .isolation = r.isolation,
+                .process = r.process,
+                .security = r.security,
             };
 
             if (r.profile) |profile| {
