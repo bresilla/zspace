@@ -514,7 +514,7 @@ test "validate rejects conflicting seccomp mode and filter" {
         .code = 0x06,
         .jt = 0,
         .jf = 0,
-        .k = std.os.linux.seccomp.RET.ALLOW,
+        .k = std.os.linux.SECCOMP.RET.ALLOW,
     }};
     const cfg: JailConfig = .{
         .name = "test",
@@ -545,7 +545,7 @@ test "validate accepts seccomp filter baseline" {
         .code = 0x06,
         .jt = 0,
         .jf = 0,
-        .k = std.os.linux.seccomp.RET.ALLOW,
+        .k = std.os.linux.SECCOMP.RET.ALLOW,
     }};
     const cfg: JailConfig = .{
         .name = "test",
@@ -562,13 +562,13 @@ test "validate accepts stacked seccomp filters" {
         .code = 0x06,
         .jt = 0,
         .jf = 0,
-        .k = std.os.linux.seccomp.RET.ALLOW,
+        .k = std.os.linux.SECCOMP.RET.ALLOW,
     }};
     const allow_all_b = [_]SeccompInstruction{.{
         .code = 0x06,
         .jt = 0,
         .jf = 0,
-        .k = std.os.linux.seccomp.RET.ALLOW,
+        .k = std.os.linux.SECCOMP.RET.ALLOW,
     }};
     const stacked = [_][]const SeccompInstruction{ &allow_all_a, &allow_all_b };
 

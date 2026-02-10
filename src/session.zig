@@ -83,8 +83,7 @@ fn openOrCreateFile(path: []const u8) !std.fs.File {
 }
 
 test "signalFd writes supervisor sync byte" {
-    var pipefds: [2]i32 = undefined;
-    try std.posix.pipe(&pipefds);
+    const pipefds = try std.posix.pipe();
     defer std.posix.close(pipefds[0]);
     defer std.posix.close(pipefds[1]);
 
@@ -96,8 +95,7 @@ test "signalFd writes supervisor sync byte" {
 }
 
 test "waitForFd consumes supervisor unblock byte" {
-    var pipefds: [2]i32 = undefined;
-    try std.posix.pipe(&pipefds);
+    const pipefds = try std.posix.pipe();
     defer std.posix.close(pipefds[0]);
     defer std.posix.close(pipefds[1]);
 
