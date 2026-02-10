@@ -79,8 +79,8 @@ pub fn spawn(self: *Container) !linux.pid_t {
     var childp_args = ChildProcessArgs{
         .container = self,
         .pipe = undefined,
-        .uid = if (self.isolation.user) 0 else linux.getuid(),
-        .gid = if (self.isolation.user) 0 else linux.getgid(),
+        .uid = if (self.isolation.user or self.namespace_fds.user != null) 0 else linux.getuid(),
+        .gid = if (self.isolation.user or self.namespace_fds.user != null) 0 else linux.getgid(),
     };
     try checkErr(linux.pipe(&childp_args.pipe), error.Pipe);
     var stack = try self.allocator.alloc(u8, 1024 * 1024);

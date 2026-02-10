@@ -452,6 +452,18 @@ test "validate rejects namespace attach conflict" {
     try std.testing.expectError(error.NamespaceAttachConflict, validate(cfg));
 }
 
+test "validate accepts attached user namespace when unshare user disabled" {
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .isolation = .{ .user = false },
+        .namespace_fds = .{ .user = 3 },
+    };
+
+    try validate(cfg);
+}
+
 test "validate rejects assert-userns-disabled conflict" {
     const cfg: JailConfig = .{
         .name = "test",

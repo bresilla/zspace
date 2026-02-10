@@ -19,6 +19,9 @@ pub fn computeCloneFlags(isolation: IsolationOptions) u32 {
 }
 
 pub fn attach(namespace_fds: NamespaceFds) !void {
+    if (namespace_fds.user) |fd| {
+        try attachNamespaceFd(fd, linux.CLONE.NEWUSER);
+    }
     if (namespace_fds.mount) |fd| {
         try attachNamespaceFd(fd, linux.CLONE.NEWNS);
     }
@@ -31,7 +34,7 @@ pub fn attach(namespace_fds: NamespaceFds) !void {
     if (namespace_fds.ipc) |fd| {
         try attachNamespaceFd(fd, linux.CLONE.NEWIPC);
     }
-    if (namespace_fds.pid != null or namespace_fds.user != null) {
+    if (namespace_fds.pid != null) {
         return error.NamespaceAttachNotSupported;
     }
 }
