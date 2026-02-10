@@ -92,6 +92,12 @@ pub fn execute(actions: []const FsAction) !void {
                 try ensurePath(tmpfs.dest);
 
                 const eff_tmpfs = effectiveTmpfs(tmpfs, current_size, current_mode);
+                if (tmpfs.size_bytes == null and eff_tmpfs.size_bytes != null) {
+                    current_size = null;
+                }
+                if (tmpfs.mode == null and eff_tmpfs.mode != null) {
+                    current_mode = null;
+                }
 
                 var opts_buf: [64]u8 = undefined;
                 const opts = if (eff_tmpfs.size_bytes != null or eff_tmpfs.mode != null)
@@ -104,7 +110,7 @@ pub fn execute(actions: []const FsAction) !void {
             },
             .dir => |dir_action| {
                 try ensurePath(dir_action.path);
-                const mode = dir_action.mode orelse current_mode;
+                const mode = dir_action.mode orelse takeMode(&current_mode);
                 if (mode) |m| {
                     try std.posix.fchmodat(std.posix.AT.FDCWD, dir_action.path, @intCast(m), 0);
                 }
@@ -204,7 +210,7 @@ pub fn execute(actions: []const FsAction) !void {
                 var file = try std.fs.cwd().createFile(trimPath(f.path), .{ .truncate = true });
                 defer file.close();
                 try file.writeAll(f.data);
-                if (current_mode) |mode| {
+                if (takeMode(&current_mode)) |mode| {
                     try std.posix.fchmodat(std.posix.AT.FDCWD, f.path, @intCast(mode), 0);
                 }
             },
@@ -248,12 +254,18 @@ pub fn execute(actions: []const FsAction) !void {
                     try out_file.writeAll(buf[0..n]);
                 }
 
-                if (current_mode) |mode| {
+                if (takeMode(&current_mode)) |mode| {
                     try std.posix.fchmodat(std.posix.AT.FDCWD, f.path, @intCast(mode), 0);
                 }
             },
         }
     }
+}
+
+fn takeMode(mode_ptr: *?u32) ?u32 {
+    const v = mode_ptr.*;
+    mode_ptr.* = null;
+    return v;
 }
 
 fn effectiveTmpfs(tmpfs: TmpfsMount, size_fallback: ?usize, mode_fallback: ?u32) TmpfsMount {
@@ -405,4 +417,10 @@ test "effectiveTmpfs applies size and mode modifiers" {
     const explicit = effectiveTmpfs(.{ .dest = "/tmp", .size_bytes = 4096, .mode = 0o700 }, 2048, 0o755);
     try std.testing.expectEqual(@as(?usize, 4096), explicit.size_bytes);
     try std.testing.expectEqual(@as(?u32, 0o700), explicit.mode);
+}
+
+test "takeMode is one-shot" {
+    var mode: ?u32 = 0o755;
+    try std.testing.expectEqual(@as(?u32, 0o755), takeMode(&mode));
+    try std.testing.expectEqual(@as(?u32, null), takeMode(&mode));
 }
