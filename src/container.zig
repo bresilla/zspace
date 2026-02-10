@@ -118,17 +118,7 @@ pub fn spawn(self: *Container) !linux.pid_t {
 pub fn wait(self: *Container, pid: linux.pid_t) !u8 {
     _ = self;
     const wait_res = std.posix.waitpid(pid, 0);
-    const status = @as(c_int, @bitCast(wait_res.status));
-
-    if (c.WIFEXITED(status)) {
-        return @intCast(c.WEXITSTATUS(status));
-    }
-    if (c.WIFSIGNALED(status)) {
-        const sig = c.WTERMSIG(status);
-        return @intCast((128 + sig) & 0xff);
-    }
-
-    return error.WaitFailed;
+    return decodeWaitStatus(wait_res.status);
 }
 
 // initializes the container environment
@@ -168,12 +158,46 @@ export fn childFn(a: usize) u8 {
         _ = std.posix.read(arg.pipe[0], &buff) catch @panic("pipe read failed");
     }
 
+    if (arg.container.isolation.pid) {
+        const code = arg.container.execAsPid1(arg.uid, arg.gid) catch |e| {
+            log.err("err: {}", .{e});
+            std.posix.exit(127);
+        };
+        std.posix.exit(code);
+    }
+
     arg.container.execCmd(arg.uid, arg.gid) catch |e| {
         log.err("err: {}", .{e});
         @panic("run failed");
     };
 
     return 0;
+}
+
+fn execAsPid1(self: *Container, uid: linux.uid_t, gid: linux.gid_t) !u8 {
+    const child_pid = try std.posix.fork();
+    if (child_pid == 0) {
+        self.execCmd(uid, gid) catch |e| {
+            log.err("cmd failed in pid1 child: {}", .{e});
+            std.posix.exit(127);
+        };
+        unreachable;
+    }
+
+    const wait_res = std.posix.waitpid(child_pid, 0);
+    return decodeWaitStatus(wait_res.status);
+}
+
+fn decodeWaitStatus(status_bits: u32) !u8 {
+    const status = @as(c_int, @bitCast(status_bits));
+    if (c.WIFEXITED(status)) {
+        return @intCast(c.WEXITSTATUS(status));
+    }
+    if (c.WIFSIGNALED(status)) {
+        const sig = c.WTERMSIG(status);
+        return @intCast((128 + sig) & 0xff);
+    }
+    return error.WaitFailed;
 }
 
 pub fn deinit(self: *Container) void {
