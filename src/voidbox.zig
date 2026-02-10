@@ -1,6 +1,7 @@
 const std = @import("std");
 const Container = @import("container.zig");
 const config = @import("config.zig");
+const doctor = @import("doctor.zig");
 const runtime = @import("runtime.zig");
 
 pub const JailConfig = config.JailConfig;
@@ -9,6 +10,7 @@ pub const IsolationOptions = config.IsolationOptions;
 pub const ResourceLimits = config.ResourceLimits;
 pub const RunOutcome = config.RunOutcome;
 pub const default_shell_config = config.default_shell_config;
+pub const DoctorReport = doctor.DoctorReport;
 
 pub fn launch(jail_config: JailConfig, allocator: std.mem.Allocator) !RunOutcome {
     try runtime.init();
@@ -32,6 +34,10 @@ pub fn launch_shell(shell_config: ShellConfig, allocator: std.mem.Allocator) !Ru
     };
 
     return launch(jail_config, allocator);
+}
+
+pub fn check_host(allocator: std.mem.Allocator) !DoctorReport {
+    return doctor.check(allocator);
 }
 
 fn build_shell_cmd(shell_config: ShellConfig, allocator: std.mem.Allocator) ![]const []const u8 {

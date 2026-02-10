@@ -98,6 +98,7 @@ pub const Resources = struct {
 pub const Args = union(enum) {
     run: RunArgs,
     ps,
+    doctor,
     help,
 };
 
@@ -110,6 +111,7 @@ pub const help =
     \\  namespace flags: --no-net --no-mount --no-pid --no-uts --no-ipc
     \\  default command when omitted: /bin/sh
     \\ps
+    \\doctor
     \\help
     \\
 ;
