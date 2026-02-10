@@ -7,12 +7,14 @@ const IsolationOptions = @import("config.zig").IsolationOptions;
 const NamespaceFds = @import("config.zig").NamespaceFds;
 
 pub fn computeCloneFlags(isolation: IsolationOptions) u32 {
-    var flags: u32 = linux.CLONE.NEWUSER | c.SIGCHLD;
+    var flags: u32 = c.SIGCHLD;
+    if (isolation.user) flags |= linux.CLONE.NEWUSER;
     if (isolation.net) flags |= linux.CLONE.NEWNET;
     if (isolation.mount) flags |= linux.CLONE.NEWNS;
     if (isolation.pid) flags |= linux.CLONE.NEWPID;
     if (isolation.uts) flags |= linux.CLONE.NEWUTS;
     if (isolation.ipc) flags |= linux.CLONE.NEWIPC;
+    if (isolation.cgroup) flags |= linux.CLONE.NEWCGROUP;
     return flags;
 }
 
@@ -62,23 +64,27 @@ test "computeCloneFlags includes all namespace flags by default" {
     try std.testing.expect((flags & linux.CLONE.NEWPID) != 0);
     try std.testing.expect((flags & linux.CLONE.NEWUTS) != 0);
     try std.testing.expect((flags & linux.CLONE.NEWIPC) != 0);
+    try std.testing.expect((flags & linux.CLONE.NEWCGROUP) == 0);
     try std.testing.expect((flags & c.SIGCHLD) != 0);
 }
 
 test "computeCloneFlags respects disabled namespaces" {
     const flags = computeCloneFlags(.{
+        .user = false,
         .net = false,
         .mount = false,
         .pid = false,
         .uts = false,
         .ipc = false,
+        .cgroup = false,
     });
 
-    try std.testing.expect((flags & linux.CLONE.NEWUSER) != 0);
+    try std.testing.expect((flags & linux.CLONE.NEWUSER) == 0);
     try std.testing.expect((flags & c.SIGCHLD) != 0);
     try std.testing.expect((flags & linux.CLONE.NEWNET) == 0);
     try std.testing.expect((flags & linux.CLONE.NEWNS) == 0);
     try std.testing.expect((flags & linux.CLONE.NEWPID) == 0);
     try std.testing.expect((flags & linux.CLONE.NEWUTS) == 0);
     try std.testing.expect((flags & linux.CLONE.NEWIPC) == 0);
+    try std.testing.expect((flags & linux.CLONE.NEWCGROUP) == 0);
 }

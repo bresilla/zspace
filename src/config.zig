@@ -7,11 +7,13 @@ pub const ResourceLimits = struct {
 };
 
 pub const IsolationOptions = struct {
+    user: bool = true,
     net: bool = true,
     mount: bool = true,
     pid: bool = true,
     uts: bool = true,
     ipc: bool = true,
+    cgroup: bool = false,
 };
 
 pub const NamespaceFds = struct {

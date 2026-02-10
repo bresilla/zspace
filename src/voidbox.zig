@@ -77,11 +77,13 @@ pub fn with_profile(jail_config: *JailConfig, profile: LaunchProfile) void {
     switch (profile) {
         .minimal => {
             jail_config.isolation = .{
+                .user = false,
                 .net = false,
                 .mount = false,
                 .pid = false,
                 .uts = false,
                 .ipc = false,
+                .cgroup = false,
             };
             jail_config.process.new_session = false;
             jail_config.process.die_with_parent = false;
@@ -94,7 +96,7 @@ pub fn with_profile(jail_config: *JailConfig, profile: LaunchProfile) void {
             jail_config.process.clear_env = false;
         },
         .full_isolation => {
-            jail_config.isolation = .{};
+            jail_config.isolation = .{ .cgroup = true };
             jail_config.process.new_session = true;
             jail_config.process.die_with_parent = true;
             jail_config.process.clear_env = true;
@@ -156,6 +158,7 @@ pub fn validate(jail_config: JailConfig) ValidationError!void {
     if (jail_config.namespace_fds.uts != null and jail_config.isolation.uts) return error.NamespaceAttachConflict;
     if (jail_config.namespace_fds.ipc != null and jail_config.isolation.ipc) return error.NamespaceAttachConflict;
     if (jail_config.namespace_fds.pid != null and jail_config.isolation.pid) return error.NamespaceAttachConflict;
+    if (jail_config.namespace_fds.user != null and jail_config.isolation.user) return error.NamespaceAttachConflict;
 
     for (jail_config.security.cap_add) |cap| {
         if (!std.os.linux.CAP.valid(cap)) return error.InvalidCapability;
@@ -324,11 +327,13 @@ test "with_profile full_isolation sets hardened defaults" {
 
     with_profile(&cfg, .full_isolation);
 
+    try std.testing.expect(cfg.isolation.user);
     try std.testing.expect(cfg.isolation.net);
     try std.testing.expect(cfg.isolation.mount);
     try std.testing.expect(cfg.isolation.pid);
     try std.testing.expect(cfg.isolation.uts);
     try std.testing.expect(cfg.isolation.ipc);
+    try std.testing.expect(cfg.isolation.cgroup);
     try std.testing.expect(cfg.process.new_session);
     try std.testing.expect(cfg.process.die_with_parent);
     try std.testing.expect(cfg.process.clear_env);
@@ -391,6 +396,7 @@ test "minimal profile rejects mount actions" {
     };
 
     with_profile(&cfg, .minimal);
+    try std.testing.expect(!cfg.isolation.user);
     try std.testing.expectError(error.FsActionsRequireMountNamespace, validate(cfg));
 }
 

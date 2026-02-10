@@ -76,7 +76,12 @@ pub fn spawn(self: *Container) !linux.pid_t {
     // setup network virtual interfaces and namespace
     try self.initNetwork();
 
-    var childp_args = ChildProcessArgs{ .container = self, .pipe = undefined, .uid = 0, .gid = 0 };
+    var childp_args = ChildProcessArgs{
+        .container = self,
+        .pipe = undefined,
+        .uid = if (self.isolation.user) 0 else linux.getuid(),
+        .gid = if (self.isolation.user) 0 else linux.getgid(),
+    };
     try checkErr(linux.pipe(&childp_args.pipe), error.Pipe);
     var stack = try self.allocator.alloc(u8, 1024 * 1024);
     var ctid: i32 = 0;
@@ -97,7 +102,9 @@ pub fn spawn(self: *Container) !linux.pid_t {
     if (self.status.userns_block_fd) |fd| {
         try waitForFd(fd);
     }
-    namespace.writeUserRootMappings(self.allocator, @intCast(pid)) catch @panic("creating root user mapping failed");
+    if (self.isolation.user) {
+        namespace.writeUserRootMappings(self.allocator, @intCast(pid)) catch @panic("creating root user mapping failed");
+    }
 
     // signal done by writing to pipe
     const buff = [_]u8{0};
