@@ -124,6 +124,9 @@ fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t) !void {
     for (self.security.cap_drop) |cap| {
         try checkErr(linux.prctl(@intFromEnum(linux.PR.CAPBSET_DROP), cap, 0, 0, 0), error.CapabilityDropFailed);
     }
+    if (self.security.seccomp_mode == .strict) {
+        try checkErr(linux.prctl(@intFromEnum(linux.PR.SET_SECCOMP), 1, 0, 0, 0), error.SeccompFailed);
+    }
 
     self.sethostname();
     try self.fs.setup(self.isolation.mount);

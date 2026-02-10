@@ -10,6 +10,7 @@ pub const IsolationOptions = config.IsolationOptions;
 pub const ResourceLimits = config.ResourceLimits;
 pub const ProcessOptions = config.ProcessOptions;
 pub const SecurityOptions = config.SecurityOptions;
+pub const SeccompMode = config.SecurityOptions.SeccompMode;
 pub const EnvironmentEntry = config.EnvironmentEntry;
 pub const LaunchProfile = config.LaunchProfile;
 pub const FsAction = config.FsAction;
@@ -121,6 +122,12 @@ pub fn validate(jail_config: JailConfig) !void {
     }
     for (jail_config.security.cap_drop) |cap| {
         if (!std.os.linux.CAP.valid(cap)) return error.InvalidCapability;
+    }
+    if (jail_config.security.seccomp_filter_fds.len > 0) {
+        return error.SeccompFilterFdsNotSupportedYet;
+    }
+    if (jail_config.security.seccomp_mode == .strict and !jail_config.security.no_new_privs) {
+        return error.SeccompStrictRequiresNoNewPrivs;
     }
 
     for (jail_config.fs_actions) |action| {
@@ -321,4 +328,29 @@ test "validate rejects unsupported capability add" {
     };
 
     try std.testing.expectError(error.CapabilityAddNotSupportedYet, validate(cfg));
+}
+
+test "validate rejects seccomp filter fds for now" {
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .security = .{ .seccomp_filter_fds = &.{3} },
+    };
+
+    try std.testing.expectError(error.SeccompFilterFdsNotSupportedYet, validate(cfg));
+}
+
+test "validate requires no_new_privs for seccomp strict" {
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .security = .{
+            .no_new_privs = false,
+            .seccomp_mode = .strict,
+        },
+    };
+
+    try std.testing.expectError(error.SeccompStrictRequiresNoNewPrivs, validate(cfg));
 }

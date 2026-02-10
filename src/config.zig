@@ -74,9 +74,16 @@ pub const ProcessOptions = struct {
 };
 
 pub const SecurityOptions = struct {
+    pub const SeccompMode = enum {
+        disabled,
+        strict,
+    };
+
     no_new_privs: bool = true,
     cap_drop: []const u8 = &.{},
     cap_add: []const u8 = &.{},
+    seccomp_mode: SeccompMode = .disabled,
+    seccomp_filter_fds: []const i32 = &.{},
 };
 
 pub const JailConfig = struct {
