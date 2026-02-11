@@ -47,10 +47,6 @@ pub fn main() !void {
 
         const launch_result = voidbox.launch(cfg, allocator);
         if (launch_result) |ok| {
-            if (!fallback_used and ok.exit_code == 127 and applyTryFallbackOnSpawnFailure(&cfg, parsed.try_options)) {
-                fallback_used = true;
-                continue;
-            }
             break :launch ok;
         } else |err| {
             if (!fallback_used and err == error.SpawnFailed and applyTryFallbackOnSpawnFailure(&cfg, parsed.try_options)) {
