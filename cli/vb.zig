@@ -505,6 +505,9 @@ fn applyTryFallbackOnSpawnFailure(cfg: *voidbox.JailConfig, try_options: TryOpti
     var changed = false;
     if (try_options.unshare_user_try and cfg.isolation.user) {
         cfg.isolation.user = false;
+        if (cfg.fs_actions.len == 0 and cfg.namespace_fds.mount == null) {
+            cfg.isolation.mount = false;
+        }
         changed = true;
     }
     if (try_options.unshare_cgroup_try and cfg.isolation.cgroup) {
@@ -517,6 +520,9 @@ fn applyTryFallbackOnSpawnFailure(cfg: *voidbox.JailConfig, try_options: TryOpti
 fn applyTryIsolationSemantics(cfg: *voidbox.JailConfig, try_options: TryOptions) void {
     if (try_options.unshare_user_try and !probeUserIsolationPath()) {
         cfg.isolation.user = false;
+        if (cfg.fs_actions.len == 0 and cfg.namespace_fds.mount == null) {
+            cfg.isolation.mount = false;
+        }
     }
     if (try_options.unshare_cgroup_try and !probeUnshare(linux.CLONE.NEWCGROUP)) {
         cfg.isolation.cgroup = false;
