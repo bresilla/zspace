@@ -395,7 +395,7 @@ fn overlaySourceSeenBefore(actions: []const FsAction, end_exclusive: usize, key:
 
 pub fn spawn(jail_config: JailConfig, allocator: std.mem.Allocator) SpawnError!Session {
     try validate(jail_config);
-    return session_api.spawn(namespace_semantics.normalized(jail_config), allocator) catch |err| switch (err) {
+    return session_api.spawn(jail_config, allocator) catch |err| switch (err) {
         error.UserNsNotDisabled => error.UserNsNotDisabled,
         error.UserNsStateUnknown => error.UserNsStateUnknown,
         else => error.SpawnFailed,

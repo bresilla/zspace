@@ -12,7 +12,7 @@ const IFA_CACHEINFO: linux.IFA = @enumFromInt(6);
 const IFA_MULTICAST: linux.IFA = @enumFromInt(7);
 const IFA_FLAGS: linux.IFA = @enumFromInt(8);
 
-// TODO: support IPv6
+// IPv4-only address attributes. IPv6 address plumbing is not implemented yet.
 pub const AddressAttr = union(enum) {
     address: [4]u8,
     local: [4]u8,

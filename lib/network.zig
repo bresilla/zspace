@@ -146,8 +146,8 @@ pub fn setupContainerVethIf(self: *Net) !void {
     defer veth1_info.deinit();
 
     try nl.linkSet(.{ .index = veth1_info.msg.header.index, .up = true });
-    // TODO: use random private ip addrs that are not used
-    try nl.addrAdd(.{ .index = veth1_info.msg.header.index, .addr = ip.getRandomIpv4Addr(), .prefix_len = 24 });
+    const container_addr = ip.getContainerIpv4Addr(self.cid);
+    try nl.addrAdd(.{ .index = veth1_info.msg.header.index, .addr = container_addr, .prefix_len = 24 });
     try nl.routeAdd(.{ .gateway = .{ 10, 0, 0, 1 } });
 
     // setup container loopback interface

@@ -30,10 +30,6 @@ pub fn validate(isolation: IsolationOptions, namespace_fds: NamespaceFds, securi
     }
 }
 
-pub fn normalized(jail_config: JailConfig) JailConfig {
-    return jail_config;
-}
-
 test "validate rejects disable_userns with attached userns" {
     const cfg: JailConfig = .{
         .name = "x",
