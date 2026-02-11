@@ -862,3 +862,34 @@ test "applyTryFallbackOnSpawnFailure drops user and implicit mount for user-try"
     try std.testing.expect(!cfg.isolation.user);
     try std.testing.expect(!cfg.isolation.mount);
 }
+
+test "parseBwrapArgs records unshare try flags" {
+    const allocator = std.testing.allocator;
+    const parsed = try parseBwrapArgs(allocator, &.{
+        "--unshare-user-try",
+        "--unshare-cgroup-try",
+        "--",
+        "/bin/true",
+    });
+    defer allocator.free(parsed.cmd);
+
+    try std.testing.expect(parsed.try_options.unshare_user_try);
+    try std.testing.expect(parsed.try_options.unshare_cgroup_try);
+}
+
+test "parseBwrapArgs keeps fs try actions" {
+    const allocator = std.testing.allocator;
+    const parsed = try parseBwrapArgs(allocator, &.{
+        "--bind-try",     "/missing",  "/mnt/a",
+        "--dev-bind-try", "/missing",  "/mnt/b",
+        "--ro-bind-try",  "/missing",  "/mnt/c",
+        "--",             "/bin/true",
+    });
+    defer allocator.free(parsed.cmd);
+    defer allocator.free(parsed.cfg.fs_actions);
+
+    try std.testing.expectEqual(@as(usize, 3), parsed.cfg.fs_actions.len);
+    try std.testing.expect(parsed.cfg.fs_actions[0] == .bind_try);
+    try std.testing.expect(parsed.cfg.fs_actions[1] == .dev_bind_try);
+    try std.testing.expect(parsed.cfg.fs_actions[2] == .ro_bind_try);
+}
