@@ -35,7 +35,10 @@ pub fn spawn(jail_config: JailConfig, allocator: std.mem.Allocator) !Session {
     else
         null;
 
-    try runtime.init();
+    const runtime_init = runtime.init();
+    if (runtime_init.warning_count() > 0) {
+        std.log.warn("runtime init completed with {} warning(s)", .{runtime_init.warning_count()});
+    }
     var container = try Container.init(jail_config, allocator);
     const pid = try container.spawn();
 
