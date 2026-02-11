@@ -4,9 +4,9 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
-        "cli",
+        "bin",
         "examples",
-        "src",
+        "lib",
     },
     .fingerprint = 0x3cf863a045e37b7c,
 }

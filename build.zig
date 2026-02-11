@@ -20,14 +20,14 @@ pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{});
 
     const voidbox_module = b.createModule(.{
-        .root_source_file = b.path("src/voidbox.zig"),
+        .root_source_file = b.path("lib/voidbox.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
 
     _ = b.addModule("voidbox", .{
-        .root_source_file = b.path("src/voidbox.zig"),
+        .root_source_file = b.path("lib/voidbox.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -80,7 +80,7 @@ pub fn build(b: *std.Build) !void {
     });
 
     const vb_module = b.createModule(.{
-        .root_source_file = b.path("cli/vb.zig"),
+        .root_source_file = b.path("bin/vb.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
