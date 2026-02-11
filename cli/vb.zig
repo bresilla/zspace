@@ -158,6 +158,8 @@ fn parseBwrapArgs(allocator: std.mem.Allocator, raw: []const []const u8) !Parsed
             cfg.isolation.net = true;
             cfg.isolation.uts = true;
             cfg.isolation.cgroup = true;
+            try_options.unshare_user_try = true;
+            try_options.unshare_cgroup_try = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "--share-net")) {
