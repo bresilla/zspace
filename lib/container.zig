@@ -51,7 +51,7 @@ pub fn init(run_args: JailConfig, allocator: std.mem.Allocator) !Container {
     return .{
         .name = run_args.name,
         .instance_id = instance_id,
-        .fs = Fs.init(run_args.rootfs_path, run_args.fs_actions),
+        .fs = Fs.init(run_args.rootfs_path, instance_id, run_args.fs_actions),
         .cmd = run_args.cmd,
         .isolation = run_args.isolation,
         .namespace_fds = run_args.namespace_fds,
@@ -168,7 +168,7 @@ pub fn spawn(self: *Container) !linux.pid_t {
 }
 
 pub fn wait(self: *Container, pid: linux.pid_t) !u8 {
-    _ = self;
+    defer self.fs.cleanupRuntimeArtifacts();
     const wait_res = std.posix.waitpid(pid, 0);
     return decodeWaitStatus(wait_res.status);
 }

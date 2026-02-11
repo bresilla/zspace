@@ -9,7 +9,7 @@ const MountedTarget = struct {
     path: []const u8,
 };
 
-pub fn execute(actions: []const FsAction) !void {
+pub fn execute(instance_id: []const u8, actions: []const FsAction) !void {
     var overlay_sources = std.ArrayList(OverlaySource).empty;
     defer overlay_sources.deinit(std.heap.page_allocator);
     var tmp_overlay_counter: usize = 0;
@@ -182,7 +182,7 @@ pub fn execute(actions: []const FsAction) !void {
 
                 try ensurePath(o.dest);
 
-                const overlay_base = try std.fmt.allocPrint(std.heap.page_allocator, "/tmp/.voidbox-overlay/{s}-{d}", .{ o.source_key, tmp_overlay_counter });
+                const overlay_base = try std.fmt.allocPrint(std.heap.page_allocator, "/tmp/.voidbox-overlay/{s}/{s}-{d}", .{ instance_id, o.source_key, tmp_overlay_counter });
                 defer std.heap.page_allocator.free(overlay_base);
                 try temp_dirs.append(std.heap.page_allocator, try std.heap.page_allocator.dupe(u8, overlay_base));
                 const upper = try std.fmt.allocPrint(std.heap.page_allocator, "{s}/upper", .{overlay_base});
@@ -210,7 +210,7 @@ pub fn execute(actions: []const FsAction) !void {
                 try mounted_targets.append(std.heap.page_allocator, .{ .path = o.dest });
             },
             .bind_data => |b| {
-                const src = try writeDataSource(b.data, data_bind_counter);
+                const src = try writeDataSource(instance_id, b.data, data_bind_counter);
                 defer std.heap.page_allocator.free(src);
                 try temp_files.append(std.heap.page_allocator, try std.heap.page_allocator.dupe(u8, src));
 
@@ -222,7 +222,7 @@ pub fn execute(actions: []const FsAction) !void {
                 data_bind_counter += 1;
             },
             .ro_bind_data => |b| {
-                const src = try writeDataSource(b.data, data_bind_counter);
+                const src = try writeDataSource(instance_id, b.data, data_bind_counter);
                 defer std.heap.page_allocator.free(src);
                 try temp_files.append(std.heap.page_allocator, try std.heap.page_allocator.dupe(u8, src));
 
@@ -250,7 +250,7 @@ pub fn execute(actions: []const FsAction) !void {
                 }
             },
             .bind_data_fd => |b| {
-                const src = try writeDataSourceFromFd(b.fd, data_bind_counter);
+                const src = try writeDataSourceFromFd(instance_id, b.fd, data_bind_counter);
                 defer std.heap.page_allocator.free(src);
                 try temp_files.append(std.heap.page_allocator, try std.heap.page_allocator.dupe(u8, src));
 
@@ -262,7 +262,7 @@ pub fn execute(actions: []const FsAction) !void {
                 data_bind_counter += 1;
             },
             .ro_bind_data_fd => |b| {
-                const src = try writeDataSourceFromFd(b.fd, data_bind_counter);
+                const src = try writeDataSourceFromFd(instance_id, b.fd, data_bind_counter);
                 defer std.heap.page_allocator.free(src);
                 try temp_files.append(std.heap.page_allocator, try std.heap.page_allocator.dupe(u8, src));
 
@@ -338,8 +338,25 @@ fn cleanupTempDirs(paths: []const []const u8) void {
     }
 }
 
-fn writeDataSource(data: []const u8, index: usize) ![]const u8 {
-    const path = try std.fmt.allocPrint(std.heap.page_allocator, "/tmp/.voidbox-data/{d}", .{index});
+pub fn cleanupInstanceArtifacts(rootfs: []const u8, instance_id: []const u8) void {
+    cleanupTree(rootedPath(std.heap.page_allocator, rootfs, "/tmp/.voidbox-data", instance_id) catch return);
+    cleanupTree(rootedPath(std.heap.page_allocator, rootfs, "/tmp/.voidbox-overlay", instance_id) catch return);
+}
+
+fn cleanupTree(path: []u8) void {
+    defer std.heap.page_allocator.free(path);
+    std.fs.deleteTreeAbsolute(path) catch {};
+}
+
+fn rootedPath(allocator: std.mem.Allocator, rootfs: []const u8, base: []const u8, child: []const u8) ![]u8 {
+    if (std.mem.eql(u8, rootfs, "/")) {
+        return std.fs.path.join(allocator, &.{ base, child });
+    }
+    return std.fs.path.join(allocator, &.{ rootfs, trimPath(base), child });
+}
+
+fn writeDataSource(instance_id: []const u8, data: []const u8, index: usize) ![]const u8 {
+    const path = try std.fmt.allocPrint(std.heap.page_allocator, "/tmp/.voidbox-data/{s}/{d}", .{ instance_id, index });
     const parent = std.fs.path.dirname(path);
     if (parent) |p| {
         try ensurePath(p);
@@ -351,8 +368,8 @@ fn writeDataSource(data: []const u8, index: usize) ![]const u8 {
     return path;
 }
 
-fn writeDataSourceFromFd(fd: i32, index: usize) ![]const u8 {
-    const path = try std.fmt.allocPrint(std.heap.page_allocator, "/tmp/.voidbox-data/{d}", .{index});
+fn writeDataSourceFromFd(instance_id: []const u8, fd: i32, index: usize) ![]const u8 {
+    const path = try std.fmt.allocPrint(std.heap.page_allocator, "/tmp/.voidbox-data/{s}/{d}", .{ instance_id, index });
     const parent = std.fs.path.dirname(path);
     if (parent) |p| {
         try ensurePath(p);
@@ -483,7 +500,7 @@ test "bind_try skips missing source without failing" {
         .{ .bind_try = .{ .src = "/definitely/not/a/real/path", .dest = "/tmp/voidbox-bind-try-skip" } },
     };
 
-    try execute(&actions);
+    try execute("itest", &actions);
 }
 
 test "dev_bind_try skips missing source without failing" {
@@ -491,7 +508,7 @@ test "dev_bind_try skips missing source without failing" {
         .{ .dev_bind_try = .{ .src = "/definitely/not/a/real/path", .dest = "/tmp/voidbox-dev-bind-try-skip" } },
     };
 
-    try execute(&actions);
+    try execute("itest", &actions);
 }
 
 test "ro_bind_try skips missing source without failing" {
@@ -499,5 +516,15 @@ test "ro_bind_try skips missing source without failing" {
         .{ .ro_bind_try = .{ .src = "/definitely/not/a/real/path", .dest = "/tmp/voidbox-ro-bind-try-skip" } },
     };
 
-    try execute(&actions);
+    try execute("itest", &actions);
+}
+
+test "rootedPath maps chroot paths to host paths" {
+    const p1 = try rootedPath(std.testing.allocator, "/", "/tmp/.voidbox-data", "abc");
+    defer std.testing.allocator.free(p1);
+    try std.testing.expectEqualStrings("/tmp/.voidbox-data/abc", p1);
+
+    const p2 = try rootedPath(std.testing.allocator, "/srv/rootfs", "/tmp/.voidbox-overlay", "xyz");
+    defer std.testing.allocator.free(p2);
+    try std.testing.expectEqualStrings("/srv/rootfs/tmp/.voidbox-overlay/xyz", p2);
 }
