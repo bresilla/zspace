@@ -496,6 +496,8 @@ fn parseBwrapArgs(allocator: std.mem.Allocator, raw: []const []const u8) !Parsed
     }
 
     if (saw_seccomp_fd and saw_add_seccomp_fd) return error.SeccompFdConflict;
+    if (pending_mode != null) return error.DanglingPermsModifier;
+    if (pending_size != null) return error.DanglingSizeModifier;
 
     cfg.process.set_env = try env_set.toOwnedSlice(allocator);
     cfg.process.unset_env = try env_unset.toOwnedSlice(allocator);
@@ -938,5 +940,21 @@ test "parseBwrapArgs rejects mixing seccomp and add-seccomp-fd" {
         "--seccomp",        "3",
         "--add-seccomp-fd", "4",
         "--",               "/bin/true",
+    }));
+}
+
+test "parseBwrapArgs rejects dangling perms modifier" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(error.DanglingPermsModifier, parseBwrapArgs(allocator, &.{
+        "--perms", "700",
+        "--",      "/bin/true",
+    }));
+}
+
+test "parseBwrapArgs rejects dangling size modifier" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(error.DanglingSizeModifier, parseBwrapArgs(allocator, &.{
+        "--size", "1024",
+        "--",     "/bin/true",
     }));
 }
