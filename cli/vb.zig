@@ -447,8 +447,13 @@ fn parseBwrapArgs(allocator: std.mem.Allocator, raw: []const []const u8) !Parsed
             try seccomp_fds.append(allocator, fd);
             continue;
         }
-        if (std.mem.eql(u8, arg, "--exec-label") or std.mem.eql(u8, arg, "--file-label")) {
-            return error.UnsupportedOption;
+        if (std.mem.eql(u8, arg, "--exec-label")) {
+            cfg.security.exec_label = try nextArg(args, &i, arg);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--file-label")) {
+            cfg.security.file_label = try nextArg(args, &i, arg);
+            continue;
         }
         if (std.mem.eql(u8, arg, "--new-session")) {
             cfg.process.new_session = true;
@@ -758,6 +763,7 @@ fn printUsage() !void {
     try out.print("  {s}--info-fd{s} FD | {s}--json-status-fd{s} FD\n", .{ option, reset, option, reset });
     try out.print("  {s}--seccomp{s} FD | {s}--add-seccomp-fd{s} FD\n", .{ option, reset, option, reset });
     try out.print("  {s}--cap-add{s} CAP | {s}--cap-drop{s} CAP\n", .{ option, reset, option, reset });
+    try out.print("  {s}--exec-label{s} LABEL | {s}--file-label{s} LABEL\n", .{ option, reset, option, reset });
     try out.print("  {s}--disable-userns{s} | {s}--assert-userns-disabled{s}\n\n", .{ option, reset, option, reset });
 
     try out.print("{s}Filesystem{s}\n", .{ section, reset });

@@ -209,6 +209,8 @@ pub const SecurityOptions = struct {
     seccomp_filter_fds: []const i32 = &.{},
     disable_userns: bool = false,
     assert_userns_disabled: bool = false,
+    exec_label: ?[]const u8 = null,
+    file_label: ?[]const u8 = null,
 };
 
 pub const JailConfig = struct {

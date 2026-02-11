@@ -39,6 +39,7 @@ pub const ValidationError = error{
     IdentityRequiresUserNamespace,
     InvalidHostname,
     AsPid1RequiresPidNamespace,
+    SecurityLabelNotSupported,
 };
 
 pub const SpawnError = ValidationError || error{

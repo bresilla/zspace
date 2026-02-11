@@ -177,6 +177,9 @@ pub fn validate(jail_config: JailConfig) ValidationError!void {
     if (jail_config.runtime.as_pid_1 and !jail_config.isolation.pid) {
         return error.AsPid1RequiresPidNamespace;
     }
+    if (jail_config.security.exec_label != null or jail_config.security.file_label != null) {
+        return error.SecurityLabelNotSupported;
+    }
 
     if (!jail_config.isolation.mount and jail_config.fs_actions.len > 0) {
         return error.FsActionsRequireMountNamespace;
