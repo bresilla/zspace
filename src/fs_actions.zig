@@ -435,3 +435,11 @@ test "takeMode is one-shot" {
     try std.testing.expectEqual(@as(?u32, 0o755), takeMode(&mode));
     try std.testing.expectEqual(@as(?u32, null), takeMode(&mode));
 }
+
+test "bind_try skips missing source without failing" {
+    const actions = [_]FsAction{
+        .{ .bind_try = .{ .src = "/definitely/not/a/real/path", .dest = "/tmp/voidbox-bind-try-skip" } },
+    };
+
+    try execute(&actions);
+}
