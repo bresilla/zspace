@@ -23,6 +23,7 @@ const StatusOptions = @import("config.zig").StatusOptions;
 const ChildProcessArgs = struct {
     container: *Container,
     pipe: [2]i32,
+    setup_pipe: [2]i32,
     uid: linux.uid_t,
     gid: linux.gid_t,
 };
@@ -91,15 +92,21 @@ pub fn spawn(self: *Container) !linux.pid_t {
     var childp_args = ChildProcessArgs{
         .container = self,
         .pipe = undefined,
+        .setup_pipe = undefined,
         .uid = self.runtime.uid orelse if (self.isolation.user or self.namespace_fds.user != null) 0 else linux.getuid(),
         .gid = self.runtime.gid orelse if (self.isolation.user or self.namespace_fds.user != null) 0 else linux.getgid(),
     };
     try checkErr(linux.pipe(&childp_args.pipe), error.Pipe);
+    try checkErr(linux.pipe(&childp_args.setup_pipe), error.Pipe);
     var parent_read_open = true;
     var parent_write_open = true;
+    var parent_setup_read_open = true;
+    var parent_setup_write_open = true;
     errdefer {
         if (parent_read_open) _ = linux.close(childp_args.pipe[0]);
         if (parent_write_open) _ = linux.close(childp_args.pipe[1]);
+        if (parent_setup_read_open) _ = linux.close(childp_args.setup_pipe[0]);
+        if (parent_setup_write_open) _ = linux.close(childp_args.setup_pipe[1]);
     }
 
     var stack = try self.allocator.alloc(u8, 1024 * 1024);
@@ -115,6 +122,8 @@ pub fn spawn(self: *Container) !linux.pid_t {
     const pid: linux.pid_t = @intCast(pid_signed);
     _ = linux.close(childp_args.pipe[0]);
     parent_read_open = false;
+    _ = linux.close(childp_args.setup_pipe[1]);
+    parent_setup_write_open = false;
 
     // move one of the veth pairs to
     // the child process network namespace
@@ -131,6 +140,8 @@ pub fn spawn(self: *Container) !linux.pid_t {
         namespace.writeUserRootMappings(self.allocator, pid) catch |err| {
             _ = linux.close(childp_args.pipe[1]);
             parent_write_open = false;
+            _ = linux.close(childp_args.setup_pipe[0]);
+            parent_setup_read_open = false;
             std.posix.kill(pid, std.posix.SIG.KILL) catch {};
             _ = std.posix.waitpid(pid, 0);
             return err;
@@ -143,6 +154,16 @@ pub fn spawn(self: *Container) !linux.pid_t {
     _ = linux.close(childp_args.pipe[1]);
     parent_write_open = false;
 
+    var ready: [1]u8 = undefined;
+    const ready_n = std.posix.read(childp_args.setup_pipe[0], &ready) catch {
+        _ = linux.close(childp_args.setup_pipe[0]);
+        parent_setup_read_open = false;
+        return error.SpawnFailed;
+    };
+    _ = linux.close(childp_args.setup_pipe[0]);
+    parent_setup_read_open = false;
+    if (ready_n != 1 or ready[0] != 1) return error.SpawnFailed;
+
     return @intCast(pid);
 }
 
@@ -154,7 +175,7 @@ pub fn wait(self: *Container, pid: linux.pid_t) !u8 {
 
 // initializes the container environment
 // and executes the user passed cmd
-fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t) !void {
+fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t, setup_ready_fd: ?i32) !void {
     try process_exec.prepare(self.allocator, uid, gid, self.process, self.security, self.namespace_fds);
 
     self.sethostname();
@@ -172,6 +193,12 @@ fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t) !void {
 
     try process_exec.finalizeNamespaces(self.namespace_fds);
 
+    if (setup_ready_fd) |fd| {
+        const one = [_]u8{1};
+        _ = std.posix.write(fd, &one) catch {};
+        _ = linux.close(fd);
+    }
+
     try process_exec.exec(self.allocator, self.cmd, self.process);
 }
 
@@ -183,6 +210,7 @@ fn waitForFd(fd: i32) !void {
 export fn childFn(a: usize) u8 {
     const arg: *ChildProcessArgs = @ptrFromInt(a);
     _ = linux.close(arg.pipe[1]);
+    _ = linux.close(arg.setup_pipe[0]);
     // block until parent sets up needed resources
     {
         var buff = [_]u8{1};
@@ -209,36 +237,36 @@ export fn childFn(a: usize) u8 {
 
     if (arg.container.isolation.pid) {
         if (arg.container.runtime.as_pid_1) {
-            arg.container.execCmd(arg.uid, arg.gid) catch {
+            arg.container.execCmd(arg.uid, arg.gid, arg.setup_pipe[1]) catch {
                 childExit(127);
             };
             childExit(0);
         }
 
-        const code = arg.container.execAsPid1(arg.uid, arg.gid) catch {
+        const code = arg.container.execAsPid1(arg.uid, arg.gid, arg.setup_pipe[1]) catch {
             childExit(127);
         };
         childExit(code);
     }
 
     if (arg.container.isolation.user) {
-        const code = arg.container.execAsPid1(arg.uid, arg.gid) catch {
+        const code = arg.container.execAsPid1(arg.uid, arg.gid, arg.setup_pipe[1]) catch {
             childExit(127);
         };
         childExit(code);
     }
 
-    arg.container.execCmd(arg.uid, arg.gid) catch {
+    arg.container.execCmd(arg.uid, arg.gid, arg.setup_pipe[1]) catch {
         childExit(127);
     };
 
     return 0;
 }
 
-fn execAsPid1(self: *Container, uid: linux.uid_t, gid: linux.gid_t) !u8 {
+fn execAsPid1(self: *Container, uid: linux.uid_t, gid: linux.gid_t, setup_ready_fd: ?i32) !u8 {
     const child_pid = try std.posix.fork();
     if (child_pid == 0) {
-        self.execCmd(uid, gid) catch {
+        self.execCmd(uid, gid, setup_ready_fd) catch {
             childExit(127);
         };
         childExit(0);
