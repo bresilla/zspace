@@ -898,6 +898,19 @@ test "parseBwrapArgs records unshare try flags" {
     try std.testing.expect(parsed.try_options.unshare_cgroup_try);
 }
 
+test "parseBwrapArgs marks unshare-all as user/cgroup try" {
+    const allocator = std.testing.allocator;
+    const parsed = try parseBwrapArgs(allocator, &.{
+        "--unshare-all",
+        "--",
+        "/bin/true",
+    });
+    defer allocator.free(parsed.cmd);
+
+    try std.testing.expect(parsed.try_options.unshare_user_try);
+    try std.testing.expect(parsed.try_options.unshare_cgroup_try);
+}
+
 test "parseBwrapArgs keeps fs try actions" {
     const allocator = std.testing.allocator;
     const parsed = try parseBwrapArgs(allocator, &.{
