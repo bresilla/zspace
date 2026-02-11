@@ -15,7 +15,6 @@ pub fn checkErr(val: usize, err: anyerror) !void {
         // busy is returned when the fs being mounted is currently in use
         // which means that it was previously maounted
         if (e == .BUSY) return;
-        std.log.err("err: {}", .{e});
         return err;
     }
 }

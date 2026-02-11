@@ -7,6 +7,10 @@ const SecurityOptions = @import("config.zig").SecurityOptions;
 const LINUX_CAPABILITY_VERSION_3 = 0x20080522;
 
 pub fn apply(security: SecurityOptions) !void {
+    if (security.cap_add.len == 0 and security.cap_drop.len == 0) {
+        return;
+    }
+
     var cap_hdr = linux.cap_user_header_t{
         .version = LINUX_CAPABILITY_VERSION_3,
         .pid = 0,

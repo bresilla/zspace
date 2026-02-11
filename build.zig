@@ -87,6 +87,12 @@ pub fn build(b: *std.Build) !void {
     });
     vb_module.addImport("voidbox", voidbox_module);
 
+    const vb_unit_tests = b.addTest(.{
+        .root_module = vb_module,
+    });
+    const run_vb_unit_tests = b.addRunArtifact(vb_unit_tests);
+    test_step.dependOn(&run_vb_unit_tests.step);
+
     const vb = b.addExecutable(.{
         .name = "vb",
         .root_module = vb_module,

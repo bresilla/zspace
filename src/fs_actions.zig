@@ -80,7 +80,11 @@ pub fn execute(actions: []const FsAction) !void {
             },
             .dev => |dest| {
                 try ensurePath(dest);
-                try mountPath("devtmpfs", dest, "devtmpfs", 0, null, error.MountDevTmpFs);
+                mountPath("devtmpfs", dest, "devtmpfs", 0, null, error.MountDevTmpFs) catch |err| {
+                    if (err != error.MountDevTmpFs) return err;
+                    const flags = linux.MS.BIND | linux.MS.REC;
+                    try mountPath("/dev", dest, null, flags, null, error.BindMount);
+                };
                 try mounted_targets.append(std.heap.page_allocator, .{ .path = dest });
             },
             .mqueue => |dest| {

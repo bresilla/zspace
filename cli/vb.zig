@@ -789,3 +789,39 @@ fn shouldUseColor() bool {
 
     return std.posix.isatty(std.posix.STDOUT_FILENO);
 }
+
+test "expandArgsFromFd expands NUL-separated args" {
+    const allocator = std.heap.page_allocator;
+    const pipefds = try std.posix.pipe();
+    defer std.posix.close(pipefds[0]);
+
+    const payload = "--help\x00";
+    _ = try std.posix.write(pipefds[1], payload);
+    std.posix.close(pipefds[1]);
+
+    var fd_buf: [16]u8 = undefined;
+    const fd_arg = try std.fmt.bufPrint(&fd_buf, "{d}", .{pipefds[0]});
+
+    const expanded = try expandArgsFromFd(allocator, &.{ "--args", fd_arg }, 0);
+    defer allocator.free(expanded);
+
+    try std.testing.expectEqual(@as(usize, 1), expanded.len);
+    try std.testing.expectEqualStrings("--help", expanded[0]);
+}
+
+test "parseBwrapArgs parses namespace fd options" {
+    const allocator = std.testing.allocator;
+    const parsed = try parseBwrapArgs(allocator, &.{
+        "--netns", "10",
+        "--mntns", "11",
+        "--utsns", "12",
+        "--ipcns", "13",
+        "--",      "/bin/true",
+    });
+    defer allocator.free(parsed.cmd);
+
+    try std.testing.expectEqual(@as(?i32, 10), parsed.cfg.namespace_fds.net);
+    try std.testing.expectEqual(@as(?i32, 11), parsed.cfg.namespace_fds.mount);
+    try std.testing.expectEqual(@as(?i32, 12), parsed.cfg.namespace_fds.uts);
+    try std.testing.expectEqual(@as(?i32, 13), parsed.cfg.namespace_fds.ipc);
+}
