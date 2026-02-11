@@ -74,8 +74,15 @@ pub fn execute(actions: []const FsAction) !void {
                 try mountPath(null, mount_pair.dest, null, remount_flags, null, error.RemountReadOnly);
             },
             .proc => |dest| {
+                if (std.mem.eql(u8, dest, "/proc")) {
+                    continue;
+                }
                 try ensurePath(dest);
-                try mountPath("proc", dest, "proc", 0, null, error.MountProc);
+                mountPath("proc", dest, "proc", 0, null, error.MountProc) catch |err| {
+                    if (err != error.MountProc) return err;
+                    const flags = linux.MS.BIND | linux.MS.REC;
+                    try mountPath("/proc", dest, null, flags, null, error.BindMount);
+                };
                 try mounted_targets.append(std.heap.page_allocator, .{ .path = dest });
             },
             .dev => |dest| {
