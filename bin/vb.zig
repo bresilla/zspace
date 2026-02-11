@@ -7,6 +7,22 @@ const Parsed = struct {
     cmd: []const []const u8,
     try_options: TryOptions,
     level_prefix: bool,
+    owned_strings: []const []u8,
+
+    pub fn deinit(self: Parsed, allocator: std.mem.Allocator) void {
+        allocator.free(self.cmd);
+        allocator.free(self.cfg.process.set_env);
+        allocator.free(self.cfg.process.unset_env);
+        allocator.free(self.cfg.security.cap_add);
+        allocator.free(self.cfg.security.cap_drop);
+        allocator.free(self.cfg.security.seccomp_filter_fds);
+        allocator.free(self.cfg.fs_actions);
+
+        for (self.owned_strings) |s| {
+            allocator.free(s);
+        }
+        allocator.free(self.owned_strings);
+    }
 };
 
 const TryOptions = struct {
@@ -34,7 +50,7 @@ pub fn main() !void {
         try printUsage();
         std.posix.exit(2);
     };
-    defer allocator.free(parsed.cmd);
+    defer parsed.deinit(allocator);
 
     var cfg = parsed.cfg;
     var fallback_used = false;
@@ -64,7 +80,13 @@ pub fn main() !void {
 }
 
 fn parseBwrapArgs(allocator: std.mem.Allocator, raw: []const []const u8) !Parsed {
-    const args = try expandArgsFromFd(allocator, raw, 0);
+    var owned_strings = std.ArrayList([]u8).empty;
+    errdefer {
+        for (owned_strings.items) |s| allocator.free(s);
+        owned_strings.deinit(allocator);
+    }
+
+    const args = try expandArgsFromFd(allocator, raw, 0, &owned_strings);
     defer allocator.free(args);
 
     if (args.len == 0) return error.HelpRequested;
@@ -318,7 +340,7 @@ fn parseBwrapArgs(allocator: std.mem.Allocator, raw: []const []const u8) !Parsed
         if (std.mem.eql(u8, arg, "--bind-fd")) {
             const fd = try parseFd(try nextArg(args, &i, arg));
             const dest = try nextArg(args, &i, arg);
-            const src = try std.fmt.allocPrint(allocator, "/proc/self/fd/{d}", .{fd});
+            const src = try allocOwnedPrint(allocator, &owned_strings, "/proc/self/fd/{d}", .{fd});
             try fs_actions.append(allocator, .{ .bind = .{ .src = src, .dest = dest } });
             continue;
         }
@@ -349,7 +371,7 @@ fn parseBwrapArgs(allocator: std.mem.Allocator, raw: []const []const u8) !Parsed
         if (std.mem.eql(u8, arg, "--ro-bind-fd")) {
             const fd = try parseFd(try nextArg(args, &i, arg));
             const dest = try nextArg(args, &i, arg);
-            const src = try std.fmt.allocPrint(allocator, "/proc/self/fd/{d}", .{fd});
+            const src = try allocOwnedPrint(allocator, &owned_strings, "/proc/self/fd/{d}", .{fd});
             try fs_actions.append(allocator, .{ .ro_bind = .{ .src = src, .dest = dest } });
             continue;
         }
@@ -423,7 +445,7 @@ fn parseBwrapArgs(allocator: std.mem.Allocator, raw: []const []const u8) !Parsed
         }
         if (std.mem.eql(u8, arg, "--overlay-src")) {
             const src = try nextArg(args, &i, arg);
-            const key = try std.fmt.allocPrint(allocator, "ov{d}", .{overlay_key_index});
+            const key = try allocOwnedPrint(allocator, &owned_strings, "ov{d}", .{overlay_key_index});
             overlay_key_index += 1;
             latest_overlay_key = key;
             try fs_actions.append(allocator, .{ .overlay_src = .{ .key = key, .path = src } });
@@ -500,18 +522,28 @@ fn parseBwrapArgs(allocator: std.mem.Allocator, raw: []const []const u8) !Parsed
     if (pending_size != null) return error.DanglingSizeModifier;
 
     cfg.process.set_env = try env_set.toOwnedSlice(allocator);
+    errdefer allocator.free(cfg.process.set_env);
     cfg.process.unset_env = try env_unset.toOwnedSlice(allocator);
+    errdefer allocator.free(cfg.process.unset_env);
     cfg.security.cap_add = try cap_add.toOwnedSlice(allocator);
+    errdefer allocator.free(cfg.security.cap_add);
     cfg.security.cap_drop = try cap_drop.toOwnedSlice(allocator);
+    errdefer allocator.free(cfg.security.cap_drop);
     cfg.security.seccomp_filter_fds = try seccomp_fds.toOwnedSlice(allocator);
+    errdefer allocator.free(cfg.security.seccomp_filter_fds);
     cfg.fs_actions = try fs_actions.toOwnedSlice(allocator);
+    errdefer allocator.free(cfg.fs_actions);
     if (cfg.fs_actions.len > 0) cfg.isolation.mount = true;
 
     applyTryIsolationSemantics(&cfg, try_options);
 
-    cfg.cmd = if (command.items.len == 0) &.{"/bin/sh"} else try command.toOwnedSlice(allocator);
+    const cmd_owned = try command.toOwnedSlice(allocator);
+    errdefer allocator.free(cmd_owned);
+    cfg.cmd = if (cmd_owned.len == 0) &.{"/bin/sh"} else cmd_owned;
 
-    return .{ .cfg = cfg, .cmd = cfg.cmd, .try_options = try_options, .level_prefix = level_prefix };
+    const owned_strings_slice = try owned_strings.toOwnedSlice(allocator);
+
+    return .{ .cfg = cfg, .cmd = cmd_owned, .try_options = try_options, .level_prefix = level_prefix, .owned_strings = owned_strings_slice };
 }
 
 fn hasLevelPrefix(args: []const []const u8) bool {
@@ -672,7 +704,7 @@ fn nextArg(args: []const []const u8, i: *usize, option: []const u8) ![]const u8 
     return args[i.*];
 }
 
-fn expandArgsFromFd(allocator: std.mem.Allocator, input: []const []const u8, depth: usize) ![]const []const u8 {
+fn expandArgsFromFd(allocator: std.mem.Allocator, input: []const []const u8, depth: usize, owned_strings: *std.ArrayList([]u8)) ![]const []const u8 {
     if (depth > 8) return error.ArgsExpansionDepthExceeded;
 
     var out = std.ArrayList([]const u8).empty;
@@ -685,10 +717,10 @@ fn expandArgsFromFd(allocator: std.mem.Allocator, input: []const []const u8, dep
             if (i + 1 >= input.len) return error.MissingOptionValue;
             i += 1;
             const fd = try parseFd(input[i]);
-            const expanded = try readArgVectorFromFd(allocator, fd);
+            const expanded = try readArgVectorFromFd(allocator, fd, owned_strings);
             defer allocator.free(expanded);
 
-            const nested = try expandArgsFromFd(allocator, expanded, depth + 1);
+            const nested = try expandArgsFromFd(allocator, expanded, depth + 1, owned_strings);
             defer allocator.free(nested);
             try out.appendSlice(allocator, nested);
             continue;
@@ -700,7 +732,7 @@ fn expandArgsFromFd(allocator: std.mem.Allocator, input: []const []const u8, dep
     return out.toOwnedSlice(allocator);
 }
 
-fn readArgVectorFromFd(allocator: std.mem.Allocator, fd: i32) ![]const []const u8 {
+fn readArgVectorFromFd(allocator: std.mem.Allocator, fd: i32, owned_strings: ?*std.ArrayList([]u8)) ![]const []const u8 {
     var file = std.fs.File{ .handle = fd };
     const data = try file.readToEndAlloc(allocator, 1 << 20);
     defer allocator.free(data);
@@ -714,16 +746,24 @@ fn readArgVectorFromFd(allocator: std.mem.Allocator, fd: i32) ![]const []const u
         if (data[idx] != 0) continue;
         if (idx > start) {
             const dup = try allocator.dupe(u8, data[start..idx]);
+            if (owned_strings) |owned| try owned.append(allocator, dup);
             try out.append(allocator, dup);
         }
         start = idx + 1;
     }
     if (start < data.len) {
         const dup = try allocator.dupe(u8, data[start..]);
+        if (owned_strings) |owned| try owned.append(allocator, dup);
         try out.append(allocator, dup);
     }
 
     return out.toOwnedSlice(allocator);
+}
+
+fn allocOwnedPrint(allocator: std.mem.Allocator, owned_strings: *std.ArrayList([]u8), comptime fmt: []const u8, args: anytype) ![]u8 {
+    const s = try std.fmt.allocPrint(allocator, fmt, args);
+    try owned_strings.append(allocator, s);
+    return s;
 }
 
 fn parseFd(raw: []const u8) !i32 {
@@ -825,6 +865,12 @@ fn shouldUseColor() bool {
 
 test "expandArgsFromFd expands NUL-separated args" {
     const allocator = std.heap.page_allocator;
+    var owned_strings = std.ArrayList([]u8).empty;
+    defer {
+        for (owned_strings.items) |s| allocator.free(s);
+        owned_strings.deinit(allocator);
+    }
+
     const pipefds = try std.posix.pipe();
     defer std.posix.close(pipefds[0]);
 
@@ -835,7 +881,7 @@ test "expandArgsFromFd expands NUL-separated args" {
     var fd_buf: [16]u8 = undefined;
     const fd_arg = try std.fmt.bufPrint(&fd_buf, "{d}", .{pipefds[0]});
 
-    const expanded = try expandArgsFromFd(allocator, &.{ "--args", fd_arg }, 0);
+    const expanded = try expandArgsFromFd(allocator, &.{ "--args", fd_arg }, 0, &owned_strings);
     defer allocator.free(expanded);
 
     try std.testing.expectEqual(@as(usize, 1), expanded.len);
@@ -851,7 +897,7 @@ test "parseBwrapArgs parses namespace fd options" {
         "--ipcns", "13",
         "--",      "/bin/true",
     });
-    defer allocator.free(parsed.cmd);
+    defer parsed.deinit(allocator);
 
     try std.testing.expectEqual(@as(?i32, 10), parsed.cfg.namespace_fds.net);
     try std.testing.expectEqual(@as(?i32, 11), parsed.cfg.namespace_fds.mount);
@@ -892,7 +938,7 @@ test "parseBwrapArgs records unshare try flags" {
         "--",
         "/bin/true",
     });
-    defer allocator.free(parsed.cmd);
+    defer parsed.deinit(allocator);
 
     try std.testing.expect(parsed.try_options.unshare_user_try);
     try std.testing.expect(parsed.try_options.unshare_cgroup_try);
@@ -905,7 +951,7 @@ test "parseBwrapArgs marks unshare-all as user/cgroup try" {
         "--",
         "/bin/true",
     });
-    defer allocator.free(parsed.cmd);
+    defer parsed.deinit(allocator);
 
     try std.testing.expect(parsed.try_options.unshare_user_try);
     try std.testing.expect(parsed.try_options.unshare_cgroup_try);
@@ -919,8 +965,7 @@ test "parseBwrapArgs keeps fs try actions" {
         "--ro-bind-try",  "/missing",  "/mnt/c",
         "--",             "/bin/true",
     });
-    defer allocator.free(parsed.cmd);
-    defer allocator.free(parsed.cfg.fs_actions);
+    defer parsed.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 3), parsed.cfg.fs_actions.len);
     try std.testing.expect(parsed.cfg.fs_actions[0] == .bind_try);
@@ -935,10 +980,7 @@ test "parseBwrapArgs maps bind-fd options to proc fd sources" {
         "--ro-bind-fd", "10",        "/mnt/b",
         "--",           "/bin/true",
     });
-    defer allocator.free(parsed.cmd);
-    defer allocator.free(parsed.cfg.fs_actions);
-    defer allocator.free(parsed.cfg.fs_actions[0].bind.src);
-    defer allocator.free(parsed.cfg.fs_actions[1].ro_bind.src);
+    defer parsed.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 2), parsed.cfg.fs_actions.len);
     try std.testing.expect(parsed.cfg.fs_actions[0] == .bind);
