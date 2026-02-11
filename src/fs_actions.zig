@@ -443,3 +443,11 @@ test "bind_try skips missing source without failing" {
 
     try execute(&actions);
 }
+
+test "dev_bind_try skips missing source without failing" {
+    const actions = [_]FsAction{
+        .{ .dev_bind_try = .{ .src = "/definitely/not/a/real/path", .dest = "/tmp/voidbox-dev-bind-try-skip" } },
+    };
+
+    try execute(&actions);
+}
