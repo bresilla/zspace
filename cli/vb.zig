@@ -837,3 +837,28 @@ test "parseBwrapArgs parses namespace fd options" {
     try std.testing.expectEqual(@as(?i32, 12), parsed.cfg.namespace_fds.uts);
     try std.testing.expectEqual(@as(?i32, 13), parsed.cfg.namespace_fds.ipc);
 }
+
+test "applyTryFallbackOnSpawnFailure drops cgroup unshare when try is enabled" {
+    var cfg: voidbox.JailConfig = .{
+        .name = "t",
+        .rootfs_path = "/",
+        .cmd = &.{"/bin/true"},
+        .isolation = .{ .cgroup = true },
+    };
+    const changed = applyTryFallbackOnSpawnFailure(&cfg, .{ .unshare_cgroup_try = true });
+    try std.testing.expect(changed);
+    try std.testing.expect(!cfg.isolation.cgroup);
+}
+
+test "applyTryFallbackOnSpawnFailure drops user and implicit mount for user-try" {
+    var cfg: voidbox.JailConfig = .{
+        .name = "t",
+        .rootfs_path = "/",
+        .cmd = &.{"/bin/true"},
+        .isolation = .{ .user = true, .mount = true },
+    };
+    const changed = applyTryFallbackOnSpawnFailure(&cfg, .{ .unshare_user_try = true });
+    try std.testing.expect(changed);
+    try std.testing.expect(!cfg.isolation.user);
+    try std.testing.expect(!cfg.isolation.mount);
+}
