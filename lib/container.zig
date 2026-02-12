@@ -197,7 +197,14 @@ fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t, setup_ready_fd:
 
     if (setup_ready_fd) |fd| {
         const one = [_]u8{1};
-        _ = std.posix.write(fd, &one) catch {};
+        const n = std.posix.write(fd, &one) catch {
+            _ = linux.close(fd);
+            return error.SetupSyncFailed;
+        };
+        if (n != 1) {
+            _ = linux.close(fd);
+            return error.SetupSyncFailed;
+        }
         _ = linux.close(fd);
     }
 
