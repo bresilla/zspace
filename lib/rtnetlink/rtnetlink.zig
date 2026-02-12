@@ -6,6 +6,7 @@ const addr = @import("address.zig");
 const route = @import("route.zig");
 
 const Self = @This();
+const MAX_ACK_FRAMES = 64;
 
 fd: std.posix.socket_t,
 allocator: std.mem.Allocator,
@@ -46,7 +47,9 @@ pub fn recv_ack(self: *Self) !void {
     }
 
     var start: usize = 0;
+    var frame_count: usize = 0;
     while (start + @sizeOf(linux.nlmsghdr) <= n) {
+        if (ackFrameCountExceeded(frame_count)) return error.TooManyAckFrames;
         const header = std.mem.bytesAsValue(linux.nlmsghdr, buff[start .. start + @sizeOf(linux.nlmsghdr)]);
         if (header.len < @sizeOf(linux.nlmsghdr)) return error.InvalidResponse;
         const frame_len = align4(header.len);
@@ -63,6 +66,7 @@ pub fn recv_ack(self: *Self) !void {
             else => return error.InvalidResponse,
         }
 
+        frame_count += 1;
         start += frame_len;
     }
 
@@ -104,6 +108,10 @@ pub fn parseNetlinkErrorCode(frame: []const u8) !i32 {
 
 fn align4(v: usize) usize {
     return std.mem.alignForward(usize, v, 4);
+}
+
+fn ackFrameCountExceeded(current_count: usize) bool {
+    return current_count >= MAX_ACK_FRAMES;
 }
 
 pub fn linkAdd(self: *Self, options: link.LinkAdd.Options) !void {
@@ -191,6 +199,11 @@ test "align4 rounds values to 4-byte boundary" {
     try std.testing.expectEqual(@as(usize, 4), align4(1));
     try std.testing.expectEqual(@as(usize, 4), align4(4));
     try std.testing.expectEqual(@as(usize, 8), align4(5));
+}
+
+test "ackFrameCountExceeded enforces ack frame cap" {
+    try std.testing.expect(!ackFrameCountExceeded(MAX_ACK_FRAMES - 1));
+    try std.testing.expect(ackFrameCountExceeded(MAX_ACK_FRAMES));
 }
 
 test "handle_ack_code treats zero as success" {
