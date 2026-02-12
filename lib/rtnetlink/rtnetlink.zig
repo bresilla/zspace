@@ -45,14 +45,25 @@ pub fn recv_ack(self: *Self) !void {
         return error.InvalidResponse;
     }
 
-    const header = std.mem.bytesAsValue(linux.nlmsghdr, buff[0..@sizeOf(linux.nlmsghdr)]);
-    if (header.len < @sizeOf(linux.nlmsghdr) or header.len > n) return error.InvalidResponse;
-    const frame = buff[0..header.len];
-    if (header.type == .DONE) {
-        return;
-    } else if (header.type == .ERROR) { // ACK/NACK response
-        const err_code = try parseNetlinkErrorCode(frame);
-        return handle_ack_code(err_code);
+    var start: usize = 0;
+    while (start + @sizeOf(linux.nlmsghdr) <= n) {
+        const header = std.mem.bytesAsValue(linux.nlmsghdr, buff[start .. start + @sizeOf(linux.nlmsghdr)]);
+        if (header.len < @sizeOf(linux.nlmsghdr)) return error.InvalidResponse;
+        const frame_len = align4(header.len);
+        if (start + frame_len > n) return error.InvalidResponse;
+        const frame = buff[start .. start + header.len];
+
+        switch (header.type) {
+            .DONE => return,
+            .ERROR => {
+                const err_code = try parseNetlinkErrorCode(frame);
+                return handle_ack_code(err_code);
+            },
+            .NOOP => {},
+            else => return error.InvalidResponse,
+        }
+
+        start += frame_len;
     }
 
     return error.InvalidResponse;
@@ -81,8 +92,14 @@ pub fn handle_ack_code(err_code: i32) !void {
 
 pub fn parseNetlinkErrorCode(frame: []const u8) !i32 {
     if (frame.len < @sizeOf(linux.nlmsghdr) + @sizeOf(i32)) return error.InvalidResponse;
+    const header = std.mem.bytesAsValue(linux.nlmsghdr, frame[0..@sizeOf(linux.nlmsghdr)]);
+    if (header.type != .ERROR) return error.InvalidResponse;
     const err_ptr = std.mem.bytesAsValue(i32, frame[@sizeOf(linux.nlmsghdr) .. @sizeOf(linux.nlmsghdr) + @sizeOf(i32)]);
     return err_ptr.*;
+}
+
+fn align4(v: usize) usize {
+    return std.mem.alignForward(usize, v, 4);
 }
 
 pub fn linkAdd(self: *Self, options: link.LinkAdd.Options) !void {
@@ -150,6 +167,26 @@ test "parseNetlinkErrorCode extracts errno field" {
 test "parseNetlinkErrorCode rejects truncated frame" {
     var buff: [@sizeOf(linux.nlmsghdr)]u8 = [_]u8{0} ** @sizeOf(linux.nlmsghdr);
     try std.testing.expectError(error.InvalidResponse, parseNetlinkErrorCode(&buff));
+}
+
+test "parseNetlinkErrorCode rejects non-error header type" {
+    const len = @sizeOf(linux.nlmsghdr) + @sizeOf(i32);
+    var buff: [len]u8 = [_]u8{0} ** len;
+    const hdr = linux.nlmsghdr{
+        .len = @intCast(len),
+        .type = .DONE,
+        .flags = 0,
+        .seq = 0,
+        .pid = 0,
+    };
+    @memcpy(buff[0..@sizeOf(linux.nlmsghdr)], std.mem.asBytes(&hdr));
+    try std.testing.expectError(error.InvalidResponse, parseNetlinkErrorCode(&buff));
+}
+
+test "align4 rounds values to 4-byte boundary" {
+    try std.testing.expectEqual(@as(usize, 4), align4(1));
+    try std.testing.expectEqual(@as(usize, 4), align4(4));
+    try std.testing.expectEqual(@as(usize, 8), align4(5));
 }
 
 test "handle_ack_code treats zero as success" {
