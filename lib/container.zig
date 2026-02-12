@@ -31,6 +31,13 @@ const ChildProcessArgs = struct {
 const Container = @This();
 var pid1_forward_target: c.sig_atomic_t = 0;
 const FORWARDED_SIGNALS = [_]c_int{ c.SIGTERM, c.SIGINT, c.SIGHUP, c.SIGQUIT, c.SIGUSR1, c.SIGUSR2 };
+
+fn signalSetContains(signals: []const c_int, sig: c_int) bool {
+    for (signals) |item| {
+        if (item == sig) return true;
+    }
+    return false;
+}
 name: []const u8,
 instance_id: []const u8,
 cmd: []const []const u8,
@@ -395,6 +402,12 @@ test "forwarded signal set includes common termination signals" {
     try std.testing.expect(has_int);
     try std.testing.expect(has_hup);
     try std.testing.expect(has_quit);
+}
+
+test "forwarded signal set excludes SIGCHLD and uncatchable signals" {
+    try std.testing.expect(!signalSetContains(&FORWARDED_SIGNALS, c.SIGCHLD));
+    try std.testing.expect(!signalSetContains(&FORWARDED_SIGNALS, c.SIGKILL));
+    try std.testing.expect(!signalSetContains(&FORWARDED_SIGNALS, c.SIGSTOP));
 }
 
 test "waitForFd consumes synchronization byte" {
