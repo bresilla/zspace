@@ -222,3 +222,44 @@ test "emitRuntimeInitWarningsWithOptions invokes callback sink" {
     try std.testing.expectEqual(StatusOptions.EventKind.runtime_init_warnings, ctx.saw_kind.?);
     try std.testing.expectEqual(@as(?u16, 3), ctx.warning_count);
 }
+
+test "emitRuntimeInitWarningsWithOptions writes json status output" {
+    const pipe_fds = try std.posix.pipe();
+    defer std.posix.close(pipe_fds[0]);
+    defer std.posix.close(pipe_fds[1]);
+
+    const options = StatusOptions{
+        .json_status_fd = pipe_fds[1],
+    };
+
+    try emitRuntimeInitWarningsWithOptions(options, 7);
+
+    var buf: [256]u8 = undefined;
+    const n = try std.posix.read(pipe_fds[0], &buf);
+    const out = buf[0..n];
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"event\":\"runtime_init_warnings\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"warning_count\":7") != null);
+}
+
+test "emitRuntimeInitWarningsWithOptions clips warning count in callback" {
+    const Ctx = struct {
+        warning_count: ?u16 = null,
+    };
+
+    const Fn = struct {
+        fn onEvent(ctx: ?*anyopaque, event: StatusOptions.Event) !void {
+            const typed: *Ctx = @ptrCast(@alignCast(ctx.?));
+            typed.warning_count = event.warning_count;
+        }
+    };
+
+    var ctx = Ctx{};
+    const options = StatusOptions{
+        .on_event = Fn.onEvent,
+        .callback_ctx = &ctx,
+    };
+
+    try emitRuntimeInitWarningsWithOptions(options, std.math.maxInt(usize));
+    try std.testing.expectEqual(@as(?u16, std.math.maxInt(u16)), ctx.warning_count);
+}
