@@ -80,7 +80,11 @@ pub fn handle_ack(msg: NlMsgError) !void {
 }
 
 pub fn handle_ack_code(err_code: i32) !void {
-    const code: linux.E = @enumFromInt(-1 * err_code);
+    if (err_code > 0) return error.InvalidResponse;
+    if (err_code == std.math.minInt(i32)) return error.InvalidResponse;
+
+    const errno_num: u16 = @intCast(-err_code);
+    const code: linux.E = @enumFromInt(errno_num);
     if (code != .SUCCESS) {
         log.info("err: {}", .{code});
         return switch (code) {
@@ -201,4 +205,12 @@ test "handle_ack_code maps EEXIST to Exists" {
 test "handle_ack_code maps unknown errors to generic Error" {
     const err_code: i32 = -@as(i32, @intFromEnum(linux.E.PERM));
     try std.testing.expectError(error.Error, handle_ack_code(err_code));
+}
+
+test "handle_ack_code rejects positive error values" {
+    try std.testing.expectError(error.InvalidResponse, handle_ack_code(1));
+}
+
+test "handle_ack_code rejects min int overflow case" {
+    try std.testing.expectError(error.InvalidResponse, handle_ack_code(std.math.minInt(i32)));
 }
