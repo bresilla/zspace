@@ -1135,6 +1135,35 @@ test "integration status callback preserves lifecycle ordering" {
     try std.testing.expect(setup_at.? < exited_at.?);
 }
 
+test "integration spawn/wait session lifecycle enforces single wait" {
+    if (!integrationTestsEnabled()) return error.SkipZigTest;
+
+    const cfg: JailConfig = .{
+        .name = "itest-session-lifecycle",
+        .rootfs_path = "/",
+        .cmd = &.{ "/bin/sh", "-c", "exit 0" },
+        .isolation = .{
+            .user = false,
+            .net = false,
+            .mount = false,
+            .pid = false,
+            .uts = false,
+            .ipc = false,
+            .cgroup = false,
+        },
+    };
+
+    var session = spawn(cfg, std.testing.allocator) catch |err| switch (err) {
+        error.SpawnFailed => return error.SkipZigTest,
+        else => return err,
+    };
+    defer session.deinit();
+
+    const first = try wait(&session);
+    try std.testing.expectEqual(@as(u8, 0), first.exit_code);
+    try std.testing.expectError(error.SessionAlreadyWaited, wait(&session));
+}
+
 fn integrationTestsEnabled() bool {
     const value = std.process.getEnvVarOwned(std.heap.page_allocator, "VOIDBOX_RUN_INTEGRATION") catch return false;
     defer std.heap.page_allocator.free(value);
