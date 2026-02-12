@@ -360,6 +360,7 @@ fn rootedPath(allocator: std.mem.Allocator, rootfs: []const u8, base: []const u8
 
 fn writeDataSource(instance_id: []const u8, data: []const u8, index: usize) ![]const u8 {
     const path = try std.fmt.allocPrint(std.heap.page_allocator, "/tmp/.voidbox-data/{s}/{d}", .{ instance_id, index });
+    errdefer std.heap.page_allocator.free(path);
     const parent = std.fs.path.dirname(path);
     if (parent) |p| {
         try ensurePath(p);
@@ -367,12 +368,14 @@ fn writeDataSource(instance_id: []const u8, data: []const u8, index: usize) ![]c
 
     var file = try std.fs.cwd().createFile(trimPath(path), .{ .truncate = true });
     defer file.close();
+    errdefer std.fs.deleteFileAbsolute(path) catch {};
     try file.writeAll(data);
     return path;
 }
 
 fn writeDataSourceFromFd(instance_id: []const u8, fd: i32, index: usize) ![]const u8 {
     const path = try std.fmt.allocPrint(std.heap.page_allocator, "/tmp/.voidbox-data/{s}/{d}", .{ instance_id, index });
+    errdefer std.heap.page_allocator.free(path);
     const parent = std.fs.path.dirname(path);
     if (parent) |p| {
         try ensurePath(p);
@@ -380,6 +383,7 @@ fn writeDataSourceFromFd(instance_id: []const u8, fd: i32, index: usize) ![]cons
 
     var out_file = try std.fs.cwd().createFile(trimPath(path), .{ .truncate = true });
     defer out_file.close();
+    errdefer std.fs.deleteFileAbsolute(path) catch {};
     var in_file = std.fs.File{ .handle = fd };
 
     var buf: [4096]u8 = undefined;
@@ -549,4 +553,16 @@ test "cleanupInstanceArtifacts removes data and overlay trees" {
 
     try std.testing.expect(!sourceExists(data_dir));
     try std.testing.expect(!sourceExists(overlay_dir));
+}
+
+test "writeDataSourceFromFd cleans temporary file on read failure" {
+    const instance_id = "itest-write-fd-cleanup";
+    const leaked_path = try std.fmt.allocPrint(std.testing.allocator, "/tmp/.voidbox-data/{s}/{d}", .{ instance_id, 0 });
+    defer std.testing.allocator.free(leaked_path);
+
+    std.fs.deleteFileAbsolute(leaked_path) catch {};
+
+    _ = writeDataSourceFromFd(instance_id, -1, 0) catch {};
+    try std.testing.expect(!sourceExists(leaked_path));
+    cleanupInstanceArtifacts("/", instance_id);
 }
