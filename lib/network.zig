@@ -155,6 +155,18 @@ fn termExitedZero(term: std.process.Child.Term) bool {
     };
 }
 
+fn countOpenFds() !usize {
+    var dir = try std.fs.openDirAbsolute("/proc/self/fd", .{ .iterate = true });
+    defer dir.close();
+
+    var iter = dir.iterate();
+    var count: usize = 0;
+    while (try iter.next()) |_| {
+        count += 1;
+    }
+    return count;
+}
+
 pub fn createVethPair(self: *Net) !void {
     const veth0 = try std.mem.concat(self.allocator, u8, &.{ "veth0-", self.cid });
     const veth1 = try std.mem.concat(self.allocator, u8, &.{ "veth1-", self.cid });
@@ -292,4 +304,20 @@ test "termExitedZero only treats exited(0) as success" {
     try std.testing.expect(termExitedZero(.{ .Exited = 0 }));
     try std.testing.expect(!termExitedZero(.{ .Exited = 1 }));
     try std.testing.expect(!termExitedZero(.{ .Signal = 9 }));
+}
+
+test "repeated Net init/deinit keeps fd count stable" {
+    const before = try countOpenFds();
+
+    var i: usize = 0;
+    while (i < 48) : (i += 1) {
+        var cid_buf: [32]u8 = undefined;
+        const cid = try std.fmt.bufPrint(&cid_buf, "fd-stability-{d}", .{i});
+
+        var net = try Net.init(std.testing.allocator, cid);
+        net.deinit() catch {};
+    }
+
+    const after = try countOpenFds();
+    try std.testing.expectEqual(before, after);
 }
