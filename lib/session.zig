@@ -126,6 +126,10 @@ fn openOrCreateAndLockFile(path: []const u8) !std.fs.File {
     return file;
 }
 
+fn lockPathForTest(allocator: std.mem.Allocator) ![]u8 {
+    return std.fmt.allocPrint(allocator, "/tmp/voidbox-session-lock-test-{}", .{std.time.nanoTimestamp()});
+}
+
 test "signalFd writes supervisor sync byte" {
     const pipefds = try std.posix.pipe();
     defer std.posix.close(pipefds[0]);
@@ -157,7 +161,7 @@ test "waitForFd errors on closed writer" {
 }
 
 test "openOrCreateAndLockFile acquires exclusive lock" {
-    const tmp_path = try std.fmt.allocPrint(std.testing.allocator, "/tmp/voidbox-session-lock-test-{}", .{std.time.nanoTimestamp()});
+    const tmp_path = try lockPathForTest(std.testing.allocator);
     defer std.testing.allocator.free(tmp_path);
     defer std.fs.deleteFileAbsolute(tmp_path) catch {};
 
@@ -165,4 +169,18 @@ test "openOrCreateAndLockFile acquires exclusive lock" {
     defer file_a.close();
 
     try std.testing.expectError(error.WouldBlock, openOrCreateAndLockFile(tmp_path));
+}
+
+test "openOrCreateAndLockFile can reacquire lock after close" {
+    const tmp_path = try lockPathForTest(std.testing.allocator);
+    defer std.testing.allocator.free(tmp_path);
+    defer std.fs.deleteFileAbsolute(tmp_path) catch {};
+
+    {
+        var first = try openOrCreateAndLockFile(tmp_path);
+        first.close();
+    }
+
+    var second = try openOrCreateAndLockFile(tmp_path);
+    second.close();
 }
