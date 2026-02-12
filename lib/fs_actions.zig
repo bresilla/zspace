@@ -572,6 +572,26 @@ test "cleanupInstanceArtifacts removes data and overlay trees" {
     try std.testing.expect(!sourceExists(overlay_dir));
 }
 
+test "cleanup helpers remove temporary files and directories" {
+    const file_path = "/tmp/voidbox-cleanup-helper-file";
+    const dir_path = "/tmp/voidbox-cleanup-helper-dir";
+
+    std.fs.deleteFileAbsolute(file_path) catch {};
+    std.fs.deleteTreeAbsolute(dir_path) catch {};
+
+    {
+        var file = try std.fs.createFileAbsolute(file_path, .{ .truncate = true });
+        file.close();
+    }
+    try ensurePath(dir_path);
+
+    cleanupTempFiles(&.{file_path});
+    cleanupTempDirs(&.{dir_path});
+
+    try std.testing.expect(!sourceExists(file_path));
+    try std.testing.expect(!sourceExists(dir_path));
+}
+
 test "writeDataSourceFromFd cleans temporary file on read failure" {
     const instance_id = "itest-write-fd-cleanup";
     const leaked_path = try std.fmt.allocPrint(std.testing.allocator, "/tmp/.voidbox-data/{s}/{d}", .{ instance_id, 0 });
