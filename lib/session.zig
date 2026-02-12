@@ -94,14 +94,22 @@ pub fn wait(session: *Session) !RunOutcome {
 
 fn waitForFd(fd: i32) !void {
     var buf: [1]u8 = undefined;
-    const n = try std.posix.read(fd, &buf);
+    const n = try readOneByte(fd, &buf);
     if (n != 1) return error.SyncFdClosed;
 }
 
 fn signalFd(fd: i32) !void {
     const buf = [_]u8{1};
-    const n = try std.posix.write(fd, &buf);
+    const n = try writeOneByte(fd, &buf);
     if (n != 1) return error.SyncFdWriteShort;
+}
+
+fn readOneByte(fd: i32, out: *[1]u8) !usize {
+    return std.posix.read(fd, out);
+}
+
+fn writeOneByte(fd: i32, data: *const [1]u8) !usize {
+    return std.posix.write(fd, data);
 }
 
 fn openOrCreateAndLockFile(path: []const u8) !std.fs.File {

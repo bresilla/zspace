@@ -197,7 +197,7 @@ fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t, setup_ready_fd:
 
     if (setup_ready_fd) |fd| {
         const one = [_]u8{1};
-        const n = std.posix.write(fd, &one) catch {
+        const n = writeOneByte(fd, &one) catch {
             _ = linux.close(fd);
             return error.SetupSyncFailed;
         };
@@ -213,7 +213,15 @@ fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t, setup_ready_fd:
 
 fn waitForFd(fd: i32) !void {
     var buf: [1]u8 = undefined;
-    _ = try std.posix.read(fd, &buf);
+    _ = try readOneByte(fd, &buf);
+}
+
+fn readOneByte(fd: i32, out: *[1]u8) !usize {
+    return std.posix.read(fd, out);
+}
+
+fn writeOneByte(fd: i32, data: *const [1]u8) !usize {
+    return std.posix.write(fd, data);
 }
 
 export fn childFn(a: usize) u8 {
