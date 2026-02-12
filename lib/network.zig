@@ -277,15 +277,23 @@ pub fn deinit(self: *Net) !void {
         var owned_veth0 = veth0;
         defer owned_veth0.deinit();
         self.nl.linkDel(owned_veth0.msg.header.index) catch |err| {
-            first_err = first_err orelse err;
+            if (shouldRecordTeardownError(err)) {
+                first_err = first_err orelse err;
+            }
         };
     } else |err| {
-        first_err = first_err orelse err;
+        if (shouldRecordTeardownError(err)) {
+            first_err = first_err orelse err;
+        }
     }
 
     self.nl.deinit();
 
     if (first_err) |err| return err;
+}
+
+fn shouldRecordTeardownError(err: anyerror) bool {
+    return err != error.NotFound;
 }
 
 test "natNeedsReconfigure returns true when not configured" {
@@ -304,6 +312,11 @@ test "termExitedZero only treats exited(0) as success" {
     try std.testing.expect(termExitedZero(.{ .Exited = 0 }));
     try std.testing.expect(!termExitedZero(.{ .Exited = 1 }));
     try std.testing.expect(!termExitedZero(.{ .Signal = 9 }));
+}
+
+test "shouldRecordTeardownError ignores not-found" {
+    try std.testing.expect(!shouldRecordTeardownError(error.NotFound));
+    try std.testing.expect(shouldRecordTeardownError(error.PermissionDenied));
 }
 
 test "repeated Net init/deinit keeps fd count stable" {
