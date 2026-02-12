@@ -1022,3 +1022,19 @@ test "parseBwrapArgs cleans owned parser strings on error path" {
         "/upper",        "/work",
     }));
 }
+
+test "parseBwrapArgs cleans owned strings for --args expansion failures" {
+    const allocator = std.testing.allocator;
+
+    const pipefds = try std.posix.pipe();
+    defer std.posix.close(pipefds[0]);
+
+    const payload = "--bind-fd\x009\x00/mnt/a\x00--overlay-src\x00/base\x00--overlay\x00/upper\x00/work\x00";
+    _ = try std.posix.write(pipefds[1], payload);
+    std.posix.close(pipefds[1]);
+
+    var fd_buf: [16]u8 = undefined;
+    const fd_arg = try std.fmt.bufPrint(&fd_buf, "{d}", .{pipefds[0]});
+
+    try std.testing.expectError(error.MissingOptionValue, parseBwrapArgs(allocator, &.{ "--args", fd_arg }));
+}
