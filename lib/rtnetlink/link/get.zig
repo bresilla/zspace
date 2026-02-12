@@ -76,13 +76,16 @@ fn recv(self: *LinkGet) !LinkMessage {
                     try RtNetLink.handle_ack_code(err_code);
                     if (parsed) |msg| return msg;
                 },
-                else => {
+                .RTM_NEWLINK => {
                     var msg = try parseLinkMessage(self.allocator, frame, header.*);
                     if (parsed == null) {
                         parsed = msg;
                     } else {
                         msg.deinit();
                     }
+                },
+                else => {
+                    if (!isAllowedFrameType(header.type)) return error.InvalidResponse;
                 },
             }
 
@@ -91,6 +94,10 @@ fn recv(self: *LinkGet) !LinkMessage {
 
         if (parsed) |msg| return msg;
     }
+}
+
+fn isAllowedFrameType(msg_type: linux.NetlinkMessageType) bool {
+    return msg_type == .NOOP;
 }
 
 fn parseLinkMessage(allocator: std.mem.Allocator, frame: []const u8, header: linux.nlmsghdr) !LinkMessage {
@@ -309,4 +316,10 @@ test "parseLinkMessage rejects non-zero trailing padding bytes" {
     buff[total_len - 1] = 1;
 
     try std.testing.expectError(error.InvalidResponse, parseLinkMessage(std.testing.allocator, &buff, hdr));
+}
+
+test "isAllowedFrameType only allows NOOP" {
+    try std.testing.expect(isAllowedFrameType(.NOOP));
+    try std.testing.expect(!isAllowedFrameType(.RTM_NEWROUTE));
+    try std.testing.expect(!isAllowedFrameType(.RTM_NEWLINK));
 }

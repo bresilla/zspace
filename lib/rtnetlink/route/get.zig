@@ -70,6 +70,8 @@ fn parseMessage(self: *Get, buff: []u8) !?RouteMessage {
         return error.InvalidResponse;
     } else if (header.type == .DONE) {
         return null;
+    } else if (header.type != .RTM_NEWROUTE) {
+        return error.InvalidResponse;
     }
 
     if (header.len < @sizeOf(linux.nlmsghdr) + @sizeOf(RouteMessage.RouteHeader)) {
@@ -267,6 +269,26 @@ test "parseMessage rejects non-zero trailing padding bytes" {
     const route_off = @sizeOf(linux.nlmsghdr);
     @memcpy(buff[route_off .. route_off + @sizeOf(RouteMessage.RouteHeader)], std.mem.asBytes(&route_hdr));
     buff[total_len - 1] = 1;
+
+    try std.testing.expectError(error.InvalidResponse, get.parseMessage(&buff));
+}
+
+test "parseMessage rejects unexpected netlink message type" {
+    var get = Get{ .msg = undefined, .nl = undefined, .allocator = std.testing.allocator };
+    const total_len = @sizeOf(linux.nlmsghdr) + @sizeOf(RouteMessage.RouteHeader);
+    var buff: [total_len]u8 = [_]u8{0} ** total_len;
+
+    const hdr = linux.nlmsghdr{
+        .len = @intCast(total_len),
+        .type = .RTM_NEWLINK,
+        .flags = 0,
+        .seq = 0,
+        .pid = 0,
+    };
+    @memcpy(buff[0..@sizeOf(linux.nlmsghdr)], std.mem.asBytes(&hdr));
+    const route_hdr = RouteMessage.RouteHeader{};
+    const route_off = @sizeOf(linux.nlmsghdr);
+    @memcpy(buff[route_off .. route_off + @sizeOf(RouteMessage.RouteHeader)], std.mem.asBytes(&route_hdr));
 
     try std.testing.expectError(error.InvalidResponse, get.parseMessage(&buff));
 }
