@@ -313,6 +313,7 @@ fn execAsPid1(self: *Container, uid: linux.uid_t, gid: linux.gid_t, setup_ready_
 
 fn installPid1SignalForwarding(child_pid: linux.pid_t) !void {
     pid1_forward_target = @intCast(child_pid);
+    errdefer resetPid1SignalForwarding();
 
     for (FORWARDED_SIGNALS) |sig| {
         if (c.signal(sig, pid1ForwardSignalHandler) == c.SIG_ERR) {
