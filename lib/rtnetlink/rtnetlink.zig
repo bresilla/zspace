@@ -151,3 +151,17 @@ test "parseNetlinkErrorCode rejects truncated frame" {
     var buff: [@sizeOf(linux.nlmsghdr)]u8 = [_]u8{0} ** @sizeOf(linux.nlmsghdr);
     try std.testing.expectError(error.InvalidResponse, parseNetlinkErrorCode(&buff));
 }
+
+test "handle_ack_code treats zero as success" {
+    try handle_ack_code(0);
+}
+
+test "handle_ack_code maps EEXIST to Exists" {
+    const err_code: i32 = -@as(i32, @intFromEnum(linux.E.EXIST));
+    try std.testing.expectError(error.Exists, handle_ack_code(err_code));
+}
+
+test "handle_ack_code maps unknown errors to generic Error" {
+    const err_code: i32 = -@as(i32, @intFromEnum(linux.E.PERM));
+    try std.testing.expectError(error.Error, handle_ack_code(err_code));
+}
