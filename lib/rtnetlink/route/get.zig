@@ -109,7 +109,16 @@ fn parseMessage(self: *Get, buff: []u8) !?RouteMessage {
         start += nalign(attr.len);
     }
 
+    if (!hasOnlyZeroPadding(frame[start..len])) return error.InvalidResponse;
+
     return msg;
+}
+
+fn hasOnlyZeroPadding(bytes: []const u8) bool {
+    for (bytes) |b| {
+        if (b != 0) return false;
+    }
+    return true;
 }
 
 test "parseMessage returns null for DONE frame" {
@@ -239,4 +248,25 @@ test "parseMessage rejects IPv6 gateway payload for unsupported family" {
     @memcpy(buff[attr_off .. attr_off + @sizeOf(Attr)], std.mem.asBytes(&gateway_attr));
 
     try std.testing.expectError(error.UnsupportedAddressFamily, get.parseMessage(&buff));
+}
+
+test "parseMessage rejects non-zero trailing padding bytes" {
+    var get = Get{ .msg = undefined, .nl = undefined, .allocator = std.testing.allocator };
+    const total_len = @sizeOf(linux.nlmsghdr) + @sizeOf(RouteMessage.RouteHeader) + 1;
+    var buff: [total_len]u8 = [_]u8{0} ** total_len;
+
+    const hdr = linux.nlmsghdr{
+        .len = @intCast(total_len),
+        .type = .RTM_NEWROUTE,
+        .flags = 0,
+        .seq = 0,
+        .pid = 0,
+    };
+    @memcpy(buff[0..@sizeOf(linux.nlmsghdr)], std.mem.asBytes(&hdr));
+    const route_hdr = RouteMessage.RouteHeader{};
+    const route_off = @sizeOf(linux.nlmsghdr);
+    @memcpy(buff[route_off .. route_off + @sizeOf(RouteMessage.RouteHeader)], std.mem.asBytes(&route_hdr));
+    buff[total_len - 1] = 1;
+
+    try std.testing.expectError(error.InvalidResponse, get.parseMessage(&buff));
 }

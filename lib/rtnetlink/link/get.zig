@@ -134,7 +134,16 @@ fn parseLinkMessage(allocator: std.mem.Allocator, frame: []const u8, header: lin
         start += nalign(rtattr.len);
     }
 
+    if (!hasOnlyZeroPadding(frame[start..header.len])) return error.InvalidResponse;
+
     return link_info;
+}
+
+fn hasOnlyZeroPadding(bytes: []const u8) bool {
+    for (bytes) |b| {
+        if (b != 0) return false;
+    }
+    return true;
 }
 
 test "parseLinkMessage rejects truncated header" {
@@ -271,6 +280,33 @@ test "parseLinkMessage rejects non-null-terminated IFNAME payload" {
     buff[attr_off + @sizeOf(linux.rtattr) + 1] = 't';
     buff[attr_off + @sizeOf(linux.rtattr) + 2] = 'h';
     buff[attr_off + @sizeOf(linux.rtattr) + 3] = '0';
+
+    try std.testing.expectError(error.InvalidResponse, parseLinkMessage(std.testing.allocator, &buff, hdr));
+}
+
+test "parseLinkMessage rejects non-zero trailing padding bytes" {
+    const total_len = @sizeOf(linux.nlmsghdr) + @sizeOf(linux.ifinfomsg) + 1;
+    var buff: [total_len]u8 = [_]u8{0} ** total_len;
+
+    const hdr = linux.nlmsghdr{
+        .len = @intCast(total_len),
+        .type = .RTM_NEWLINK,
+        .flags = 0,
+        .seq = 0,
+        .pid = 0,
+    };
+    @memcpy(buff[0..@sizeOf(linux.nlmsghdr)], std.mem.asBytes(&hdr));
+
+    const ifi = linux.ifinfomsg{
+        .family = linux.AF.UNSPEC,
+        .type = 0,
+        .index = 1,
+        .flags = 0,
+        .change = 0,
+    };
+    const ifi_off = @sizeOf(linux.nlmsghdr);
+    @memcpy(buff[ifi_off .. ifi_off + @sizeOf(linux.ifinfomsg)], std.mem.asBytes(&ifi));
+    buff[total_len - 1] = 1;
 
     try std.testing.expectError(error.InvalidResponse, parseLinkMessage(std.testing.allocator, &buff, hdr));
 }
