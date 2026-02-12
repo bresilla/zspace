@@ -1267,6 +1267,66 @@ test "integration stress parallel netless launches" {
     try std.testing.expect(c3.ok);
 }
 
+test "integration stress parallel launches with namespace toggles" {
+    if (!integrationTestsEnabled()) return error.SkipZigTest;
+
+    const WorkerCtx = struct {
+        ok: bool = true,
+        saw_spawn_failed: bool = false,
+    };
+
+    const Worker = struct {
+        fn run(ctx: *WorkerCtx) void {
+            var i: usize = 0;
+            while (i < 3) : (i += 1) {
+                const cfg: JailConfig = .{
+                    .name = "itest-parallel-toggles",
+                    .rootfs_path = "/",
+                    .cmd = &.{ "/bin/sh", "-c", "exit 0" },
+                    .isolation = .{
+                        .user = false,
+                        .net = false,
+                        .mount = false,
+                        .pid = true,
+                        .uts = true,
+                        .ipc = false,
+                        .cgroup = false,
+                    },
+                };
+
+                const outcome = launch(cfg, std.testing.allocator) catch |err| switch (err) {
+                    error.SpawnFailed => {
+                        ctx.saw_spawn_failed = true;
+                        return;
+                    },
+                    else => {
+                        ctx.ok = false;
+                        return;
+                    },
+                };
+                if (outcome.exit_code != 0) {
+                    ctx.ok = false;
+                    return;
+                }
+            }
+        }
+    };
+
+    var c0 = WorkerCtx{};
+    var c1 = WorkerCtx{};
+    const t0 = try std.Thread.spawn(.{}, Worker.run, .{&c0});
+    const t1 = try std.Thread.spawn(.{}, Worker.run, .{&c1});
+    t0.join();
+    t1.join();
+
+    if (c0.saw_spawn_failed or c1.saw_spawn_failed) {
+        return error.SkipZigTest;
+    }
+
+    try std.testing.expect(c0.ok);
+    try std.testing.expect(c1.ok);
+}
+
 fn integrationTestsEnabled() bool {
     const value = std.process.getEnvVarOwned(std.heap.page_allocator, "VOIDBOX_RUN_INTEGRATION") catch return false;
     defer std.heap.page_allocator.free(value);
