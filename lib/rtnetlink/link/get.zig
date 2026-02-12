@@ -4,6 +4,7 @@ const std = @import("std");
 const log = std.log;
 const nalign = @import("../utils.zig").nalign;
 const linux = std.os.linux;
+const MAX_LINK_FRAMES = 2048;
 
 const LinkGet = @This();
 pub const Options = struct {
@@ -51,6 +52,7 @@ pub fn exec(self: *LinkGet) !LinkMessage {
 fn recv(self: *LinkGet) !LinkMessage {
     var buff: [4096]u8 = undefined;
     var parsed: ?LinkMessage = null;
+    var frame_count: usize = 0;
     errdefer if (parsed) |*msg| msg.deinit();
 
     while (true) {
@@ -59,6 +61,7 @@ fn recv(self: *LinkGet) !LinkMessage {
 
         var start: usize = 0;
         while (start + @sizeOf(linux.nlmsghdr) <= n) {
+            if (linkFrameCountExceeded(frame_count)) return error.TooManyLinkMessages;
             const header = std.mem.bytesAsValue(linux.nlmsghdr, buff[start .. start + @sizeOf(linux.nlmsghdr)]);
             if (header.len < @sizeOf(linux.nlmsghdr)) return error.InvalidResponse;
 
@@ -89,6 +92,7 @@ fn recv(self: *LinkGet) !LinkMessage {
                 },
             }
 
+            frame_count += 1;
             start += frame_len;
         }
 
@@ -98,6 +102,10 @@ fn recv(self: *LinkGet) !LinkMessage {
 
 fn isAllowedFrameType(msg_type: linux.NetlinkMessageType) bool {
     return msg_type == .NOOP;
+}
+
+fn linkFrameCountExceeded(current_count: usize) bool {
+    return current_count >= MAX_LINK_FRAMES;
 }
 
 fn parseLinkMessage(allocator: std.mem.Allocator, frame: []const u8, header: linux.nlmsghdr) !LinkMessage {
@@ -322,4 +330,9 @@ test "isAllowedFrameType only allows NOOP" {
     try std.testing.expect(isAllowedFrameType(.NOOP));
     try std.testing.expect(!isAllowedFrameType(.RTM_NEWROUTE));
     try std.testing.expect(!isAllowedFrameType(.RTM_NEWLINK));
+}
+
+test "linkFrameCountExceeded enforces frame cap" {
+    try std.testing.expect(!linkFrameCountExceeded(MAX_LINK_FRAMES - 1));
+    try std.testing.expect(linkFrameCountExceeded(MAX_LINK_FRAMES));
 }
