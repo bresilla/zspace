@@ -49,7 +49,9 @@ fn recv(self: *Get) ![]RouteMessage {
             const msg = (try self.parseMessage(buff[d..n])) orelse break :outer;
             try response.append(self.allocator, msg);
             if (msg.hdr.len == 0) return error.InvalidResponse;
-            d += nalign(msg.hdr.len);
+            const frame_len = nalign(msg.hdr.len);
+            if (d + frame_len > n) return error.InvalidResponse;
+            d += frame_len;
         }
         n = try self.nl.recv(&buff);
     }
