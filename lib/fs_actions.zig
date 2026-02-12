@@ -592,6 +592,37 @@ test "cleanup helpers remove temporary files and directories" {
     try std.testing.expect(!sourceExists(dir_path));
 }
 
+test "execute cleans bind-data temp file on mount failure" {
+    const instance_id = "itest-bind-data-rollback";
+    const temp_source = "/tmp/.voidbox-data/itest-bind-data-rollback/0";
+
+    std.fs.deleteFileAbsolute(temp_source) catch {};
+
+    const actions = [_]FsAction{
+        .{ .bind_data = .{ .data = "hello", .dest = "/tmp/voidbox-bind-data-fail" } },
+    };
+
+    try std.testing.expectError(error.BindMount, execute(instance_id, &actions));
+    try std.testing.expect(!sourceExists(temp_source));
+    cleanupInstanceArtifacts("/", instance_id);
+}
+
+test "execute cleans tmp-overlay temp dirs on overlay mount failure" {
+    const instance_id = "itest-tmp-overlay-rollback";
+    const overlay_base = "/tmp/.voidbox-overlay/itest-tmp-overlay-rollback/base-0";
+
+    std.fs.deleteTreeAbsolute(overlay_base) catch {};
+
+    const actions = [_]FsAction{
+        .{ .overlay_src = .{ .key = "base", .path = "/definitely/not/a/real/lowerdir" } },
+        .{ .tmp_overlay = .{ .source_key = "base", .dest = "/tmp/voidbox-overlay-fail" } },
+    };
+
+    try std.testing.expectError(error.MountOverlay, execute(instance_id, &actions));
+    try std.testing.expect(!sourceExists(overlay_base));
+    cleanupInstanceArtifacts("/", instance_id);
+}
+
 test "writeDataSourceFromFd cleans temporary file on read failure" {
     const instance_id = "itest-write-fd-cleanup";
     const leaked_path = try std.fmt.allocPrint(std.testing.allocator, "/tmp/.voidbox-data/{s}/{d}", .{ instance_id, 0 });
