@@ -14,6 +14,10 @@ pub const Options = struct {
     index: ?u32 = null,
 };
 
+fn hasActiveLinkFilters(opts: Options) bool {
+    return opts.name != null or opts.index != null;
+}
+
 msg: LinkMessage,
 nl: *RtNetLink,
 opts: Options,
@@ -48,10 +52,10 @@ pub fn exec(self: *LinkGet) !LinkMessage {
     defer self.msg.allocator.free(data);
 
     try self.nl.send(data);
-    return self.recv();
+    return self.recv(hasActiveLinkFilters(self.opts));
 }
 
-fn recv(self: *LinkGet) !LinkMessage {
+fn recv(self: *LinkGet, stop_on_first_link: bool) !LinkMessage {
     var buff: [4096]u8 = undefined;
     var parsed: ?LinkMessage = null;
     var frame_count: usize = 0;
@@ -86,6 +90,7 @@ fn recv(self: *LinkGet) !LinkMessage {
                 .RTM_NEWLINK => {
                     var msg = try parseLinkMessage(self.allocator, frame, header.*);
                     if (parsed == null) {
+                        if (stop_on_first_link) return msg;
                         parsed = msg;
                     } else {
                         msg.deinit();
@@ -347,6 +352,12 @@ test "isAllowedFrameType only allows NOOP" {
     try std.testing.expect(isAllowedFrameType(.NOOP));
     try std.testing.expect(!isAllowedFrameType(.RTM_NEWROUTE));
     try std.testing.expect(!isAllowedFrameType(.RTM_NEWLINK));
+}
+
+test "hasActiveLinkFilters detects active selector options" {
+    try std.testing.expect(!hasActiveLinkFilters(.{}));
+    try std.testing.expect(hasActiveLinkFilters(.{ .name = "eth0" }));
+    try std.testing.expect(hasActiveLinkFilters(.{ .index = 2 }));
 }
 
 test "linkFrameCountExceeded enforces frame cap" {
