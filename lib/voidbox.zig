@@ -1327,6 +1327,101 @@ test "integration stress parallel launches with namespace toggles" {
     try std.testing.expect(c1.ok);
 }
 
+test "integration stress parallel launches with status callbacks" {
+    if (!integrationTestsEnabled()) return error.SkipZigTest;
+
+    const EventCtx = struct {
+        index: usize = 0,
+        spawned_at: ?usize = null,
+        setup_at: ?usize = null,
+        exited_at: ?usize = null,
+    };
+
+    const WorkerCtx = struct {
+        ok: bool = true,
+        saw_spawn_failed: bool = false,
+    };
+
+    const Worker = struct {
+        fn onEvent(ctx_ptr: ?*anyopaque, event: StatusEvent) !void {
+            const ctx: *EventCtx = @ptrCast(@alignCast(ctx_ptr.?));
+            switch (event.kind) {
+                .spawned => {
+                    if (ctx.spawned_at == null) ctx.spawned_at = ctx.index;
+                },
+                .setup_finished => {
+                    if (ctx.setup_at == null) ctx.setup_at = ctx.index;
+                },
+                .exited => {
+                    if (ctx.exited_at == null) ctx.exited_at = ctx.index;
+                },
+                else => {},
+            }
+            ctx.index += 1;
+        }
+
+        fn run(ctx: *WorkerCtx) void {
+            var i: usize = 0;
+            while (i < 3) : (i += 1) {
+                var event_ctx = EventCtx{};
+                const cfg: JailConfig = .{
+                    .name = "itest-parallel-status",
+                    .rootfs_path = "/",
+                    .cmd = &.{ "/bin/sh", "-c", "exit 0" },
+                    .status = .{ .on_event = onEvent, .callback_ctx = &event_ctx },
+                    .isolation = .{
+                        .user = false,
+                        .net = false,
+                        .mount = false,
+                        .pid = false,
+                        .uts = false,
+                        .ipc = false,
+                        .cgroup = false,
+                    },
+                };
+
+                const outcome = launch(cfg, std.testing.allocator) catch |err| switch (err) {
+                    error.SpawnFailed => {
+                        ctx.saw_spawn_failed = true;
+                        return;
+                    },
+                    else => {
+                        ctx.ok = false;
+                        return;
+                    },
+                };
+                if (outcome.exit_code != 0) {
+                    ctx.ok = false;
+                    return;
+                }
+
+                if (event_ctx.spawned_at == null or event_ctx.setup_at == null or event_ctx.exited_at == null) {
+                    ctx.ok = false;
+                    return;
+                }
+                if (!(event_ctx.spawned_at.? < event_ctx.setup_at.? and event_ctx.setup_at.? < event_ctx.exited_at.?)) {
+                    ctx.ok = false;
+                    return;
+                }
+            }
+        }
+    };
+
+    var c0 = WorkerCtx{};
+    var c1 = WorkerCtx{};
+    const t0 = try std.Thread.spawn(.{}, Worker.run, .{&c0});
+    const t1 = try std.Thread.spawn(.{}, Worker.run, .{&c1});
+    t0.join();
+    t1.join();
+
+    if (c0.saw_spawn_failed or c1.saw_spawn_failed) {
+        return error.SkipZigTest;
+    }
+
+    try std.testing.expect(c0.ok);
+    try std.testing.expect(c1.ok);
+}
+
 test "integration launch supports pid namespace as_pid_1 mode" {
     if (!integrationTestsEnabled()) return error.SkipZigTest;
 
