@@ -6,6 +6,7 @@ const RouteMessage = @import("route.zig");
 const Attr = @import("attrs.zig").RtAttr;
 const nalign = @import("../utils.zig").nalign;
 const MAX_ROUTE_MESSAGES = 4096;
+const MAX_ROUTE_ATTRS = 1024;
 
 const Get = @This();
 
@@ -90,7 +91,9 @@ fn parseMessage(self: *Get, buff: []u8) !?RouteMessage {
     msg.msg.hdr = hdr.*;
 
     var start: usize = @sizeOf(RouteMessage.RouteHeader) + @sizeOf(linux.nlmsghdr);
+    var attr_count: usize = 0;
     while (start + @sizeOf(Attr) <= len) {
+        if (routeAttrCountExceeded(attr_count)) return error.TooManyRouteAttrs;
         const attr = std.mem.bytesAsValue(Attr, frame[start .. start + @sizeOf(Attr)]);
         if (attr.len < @sizeOf(Attr)) return error.InvalidResponse;
         if (start + attr.len > len) return error.InvalidResponse;
@@ -110,6 +113,7 @@ fn parseMessage(self: *Get, buff: []u8) !?RouteMessage {
             else => {},
         }
 
+        attr_count += 1;
         start += nalign(attr.len);
     }
 
@@ -127,6 +131,10 @@ fn hasOnlyZeroPadding(bytes: []const u8) bool {
 
 fn routeCountExceeded(current_count: usize) bool {
     return current_count >= MAX_ROUTE_MESSAGES;
+}
+
+fn routeAttrCountExceeded(current_count: usize) bool {
+    return current_count >= MAX_ROUTE_ATTRS;
 }
 
 test "parseMessage returns null for DONE frame" {
@@ -321,4 +329,9 @@ test "parseMessage treats successful ERROR ack as terminator" {
 test "routeCountExceeded enforces hard cap" {
     try std.testing.expect(!routeCountExceeded(MAX_ROUTE_MESSAGES - 1));
     try std.testing.expect(routeCountExceeded(MAX_ROUTE_MESSAGES));
+}
+
+test "routeAttrCountExceeded enforces attr cap" {
+    try std.testing.expect(!routeAttrCountExceeded(MAX_ROUTE_ATTRS - 1));
+    try std.testing.expect(routeAttrCountExceeded(MAX_ROUTE_ATTRS));
 }

@@ -5,6 +5,7 @@ const log = std.log;
 const nalign = @import("../utils.zig").nalign;
 const linux = std.os.linux;
 const MAX_LINK_FRAMES = 2048;
+const MAX_LINK_ATTRS = 1024;
 
 const LinkGet = @This();
 pub const Options = struct {
@@ -108,6 +109,10 @@ fn linkFrameCountExceeded(current_count: usize) bool {
     return current_count >= MAX_LINK_FRAMES;
 }
 
+fn linkAttrCountExceeded(current_count: usize) bool {
+    return current_count >= MAX_LINK_ATTRS;
+}
+
 fn parseLinkMessage(allocator: std.mem.Allocator, frame: []const u8, header: linux.nlmsghdr) !LinkMessage {
     if (header.len < @sizeOf(linux.nlmsghdr) + @sizeOf(linux.ifinfomsg) or header.len > frame.len) {
         return error.InvalidResponse;
@@ -125,7 +130,9 @@ fn parseLinkMessage(allocator: std.mem.Allocator, frame: []const u8, header: lin
     log.info("header: {}", .{header});
     log.info("ifinfo: {}", .{ifinfo});
 
+    var attr_count: usize = 0;
     while (start + @sizeOf(linux.rtattr) <= header.len) {
+        if (linkAttrCountExceeded(attr_count)) return error.TooManyLinkAttrs;
         const rtattr = std.mem.bytesAsValue(linux.rtattr, frame[start .. start + @sizeOf(linux.rtattr)]);
         if (rtattr.len < @sizeOf(linux.rtattr)) return error.InvalidResponse;
         if (start + rtattr.len > header.len) return error.InvalidResponse;
@@ -146,6 +153,7 @@ fn parseLinkMessage(allocator: std.mem.Allocator, frame: []const u8, header: lin
             else => {},
         }
 
+        attr_count += 1;
         start += nalign(rtattr.len);
     }
 
@@ -335,4 +343,9 @@ test "isAllowedFrameType only allows NOOP" {
 test "linkFrameCountExceeded enforces frame cap" {
     try std.testing.expect(!linkFrameCountExceeded(MAX_LINK_FRAMES - 1));
     try std.testing.expect(linkFrameCountExceeded(MAX_LINK_FRAMES));
+}
+
+test "linkAttrCountExceeded enforces attr cap" {
+    try std.testing.expect(!linkAttrCountExceeded(MAX_LINK_ATTRS - 1));
+    try std.testing.expect(linkAttrCountExceeded(MAX_LINK_ATTRS));
 }
