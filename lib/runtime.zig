@@ -49,7 +49,7 @@ pub fn init() InitResult {
     };
     defer root_cgroup_file.close();
 
-    _ = root_cgroup_file.write("+cpu +memory +pids") catch |err| {
+    root_cgroup_file.writeAll("+cpu +memory +pids") catch |err| {
         record_warning(
             &result,
             .CgroupControllerWriteFailed,
