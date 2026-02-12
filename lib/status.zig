@@ -42,6 +42,17 @@ pub fn emitSpawnedWithOptions(options: StatusOptions, pid: std.posix.pid_t, ns_i
     try emitEvent(options, event);
 }
 
+pub fn emitRuntimeInitWarningsWithOptions(options: StatusOptions, warning_count: usize) !void {
+    const clipped: u16 = @intCast(@min(warning_count, std.math.maxInt(u16)));
+    const event: StatusOptions.Event = .{
+        .kind = .runtime_init_warnings,
+        .pid = 0,
+        .timestamp = std.time.timestamp(),
+        .warning_count = clipped,
+    };
+    try emitEvent(options, event);
+}
+
 pub fn emitExitedWithOptions(options: StatusOptions, pid: std.posix.pid_t, exit_code: u8) !void {
     const event: StatusOptions.Event = .{
         .kind = .exited,
@@ -73,11 +84,19 @@ fn emitEvent(options: StatusOptions, event: StatusOptions.Event) !void {
 
     if (options.json_status_fd) |fd| {
         switch (event.kind) {
+            .runtime_init_warnings => try emitRuntimeInitWarnings(fd, event.warning_count orelse 0),
             .spawned => try emitSpawned(fd, event.pid, event.ns_ids),
             .setup_finished => try emitSetupFinished(fd, event.pid, event.ns_ids),
             .exited => try emitExited(fd, event.pid, event.exit_code orelse 0),
         }
     }
+}
+
+fn emitRuntimeInitWarnings(fd: i32, warning_count: u16) !void {
+    const ts = std.time.timestamp();
+    var file = std.fs.File{ .handle = fd };
+    var writer = file.deprecatedWriter();
+    try writer.print("{{\"event\":\"runtime_init_warnings\",\"warning_count\":{},\"ts\":{}}}\n", .{ warning_count, ts });
 }
 
 fn emitSetupFinished(fd: i32, pid: std.posix.pid_t, ns_ids: NamespaceIds) !void {
@@ -104,6 +123,7 @@ fn emitInfo(fd: i32, event: StatusOptions.Event) !void {
     var file = std.fs.File{ .handle = fd };
     var writer = file.deprecatedWriter();
     switch (event.kind) {
+        .runtime_init_warnings => try writer.print("event=runtime_init_warnings warning_count={} ts={}\n", .{ event.warning_count orelse 0, event.timestamp }),
         .spawned => try writer.print("event=spawned pid={} ts={}\n", .{ event.pid, event.timestamp }),
         .setup_finished => try writer.print("event=setup_finished pid={} ts={}\n", .{ event.pid, event.timestamp }),
         .exited => try writer.print("event=exited pid={} exit_code={} ts={}\n", .{ event.pid, event.exit_code orelse 0, event.timestamp }),
@@ -173,4 +193,32 @@ test "emitEvent invokes callback sink" {
     try emitSetupFinishedWithOptions(options, 1234, .{});
     try std.testing.expect(ctx.called);
     try std.testing.expectEqual(StatusOptions.EventKind.setup_finished, ctx.saw_kind.?);
+}
+
+test "emitRuntimeInitWarningsWithOptions invokes callback sink" {
+    const Ctx = struct {
+        called: bool = false,
+        saw_kind: ?StatusOptions.EventKind = null,
+        warning_count: ?u16 = null,
+    };
+
+    const Fn = struct {
+        fn onEvent(ctx: ?*anyopaque, event: StatusOptions.Event) !void {
+            const typed: *Ctx = @ptrCast(@alignCast(ctx.?));
+            typed.called = true;
+            typed.saw_kind = event.kind;
+            typed.warning_count = event.warning_count;
+        }
+    };
+
+    var ctx = Ctx{};
+    const options = StatusOptions{
+        .on_event = Fn.onEvent,
+        .callback_ctx = &ctx,
+    };
+
+    try emitRuntimeInitWarningsWithOptions(options, 3);
+    try std.testing.expect(ctx.called);
+    try std.testing.expectEqual(StatusOptions.EventKind.runtime_init_warnings, ctx.saw_kind.?);
+    try std.testing.expectEqual(@as(?u16, 3), ctx.warning_count);
 }

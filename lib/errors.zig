@@ -45,6 +45,7 @@ pub const ValidationError = error{
 pub const SpawnError = ValidationError || error{
     OutOfMemory,
     SpawnFailed,
+    RuntimeInitWarning,
     UserNsNotDisabled,
     UserNsStateUnknown,
 };

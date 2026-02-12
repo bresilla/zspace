@@ -57,6 +57,10 @@ pub const AddressInfo = struct {
             start += try attr.encode(buff[start..]);
         }
     }
+
+    pub fn deinit(self: *AddressInfo) void {
+        self.attrs.deinit(self.allocator);
+    }
 };
 
 const RequestType = enum {
@@ -121,4 +125,15 @@ pub fn compose(self: *Addr) ![]u8 {
 
 pub fn addAttr(self: *Addr, attr: AddressAttr) !void {
     try self.msg.attrs.append(self.msg.allocator, attr);
+}
+
+pub fn deinit(self: *Addr) void {
+    self.msg.deinit();
+}
+
+test "Addr deinit releases appended attributes" {
+    var msg = Addr.init(std.testing.allocator, .create);
+    try msg.addAttr(.{ .address = .{ 10, 0, 0, 2 } });
+    try msg.addAttr(.{ .local = .{ 10, 0, 0, 2 } });
+    msg.deinit();
 }

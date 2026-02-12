@@ -46,10 +46,10 @@ fn recv(self: *Get) ![]RouteMessage {
     outer: while (n != 0) {
         var d: usize = 0;
         while (d < n) {
-            const msg = (try self.parseMessage(buff[d..])) orelse break :outer;
+            const msg = (try self.parseMessage(buff[d..n])) orelse break :outer;
             try response.append(self.allocator, msg);
             if (msg.hdr.len == 0) return error.InvalidResponse;
-            d += msg.hdr.len;
+            d += nalign(msg.hdr.len);
         }
         n = try self.nl.recv(&buff);
     }
@@ -64,7 +64,7 @@ fn parseMessage(self: *Get, buff: []u8) !?RouteMessage {
         if (buff.len < @sizeOf(NetLink.NlMsgError)) return error.InvalidResponse;
         const response = std.mem.bytesAsValue(NetLink.NlMsgError, buff[0..]);
         try NetLink.handle_ack(response.*);
-        unreachable;
+        return error.InvalidResponse;
     } else if (header.type == .DONE) {
         return null;
     }
@@ -87,15 +87,17 @@ fn parseMessage(self: *Get, buff: []u8) !?RouteMessage {
         const attr = std.mem.bytesAsValue(Attr, buff[start .. start + @sizeOf(Attr)]);
         if (attr.len < @sizeOf(Attr)) return error.InvalidResponse;
         if (start + attr.len > len) return error.InvalidResponse;
+        const payload_len = attr.len - @sizeOf(Attr);
         // TODO: parse more attrs
         switch (attr.type) {
             .Gateway => {
-                if (attr.len < @sizeOf(Attr) + 4) return error.InvalidResponse;
-                try msg.addAttr(.{ .gateway = buff[start + @sizeOf(Attr) .. start + attr.len][0..4].* });
+                if (msg.msg.hdr.family != linux.AF.INET) return error.UnsupportedAddressFamily;
+                if (payload_len != 4) return error.InvalidResponse;
+                try msg.addAttr(.{ .gateway = buff[start + @sizeOf(Attr) .. start + @sizeOf(Attr) + 4][0..4].* });
             },
             .Oif => {
-                if (attr.len < @sizeOf(Attr) + @sizeOf(u32)) return error.InvalidResponse;
-                const value = std.mem.bytesAsValue(u32, buff[start + @sizeOf(Attr) .. start + attr.len]);
+                if (payload_len != @sizeOf(u32)) return error.InvalidResponse;
+                const value = std.mem.bytesAsValue(u32, buff[start + @sizeOf(Attr) .. start + @sizeOf(Attr) + @sizeOf(u32)]);
                 try msg.addAttr(.{ .output_if = value.* });
             },
             else => {},
@@ -105,4 +107,133 @@ fn parseMessage(self: *Get, buff: []u8) !?RouteMessage {
     }
 
     return msg;
+}
+
+test "parseMessage returns null for DONE frame" {
+    var get = Get{ .msg = undefined, .nl = undefined, .allocator = std.testing.allocator };
+    var buff: [@sizeOf(linux.nlmsghdr)]u8 = [_]u8{0} ** @sizeOf(linux.nlmsghdr);
+    const hdr = linux.nlmsghdr{
+        .len = @intCast(@sizeOf(linux.nlmsghdr)),
+        .type = .DONE,
+        .flags = 0,
+        .seq = 0,
+        .pid = 0,
+    };
+    @memcpy(buff[0..@sizeOf(linux.nlmsghdr)], std.mem.asBytes(&hdr));
+    try std.testing.expect((try get.parseMessage(&buff)) == null);
+}
+
+test "parseMessage rejects zero-length header" {
+    var get = Get{ .msg = undefined, .nl = undefined, .allocator = std.testing.allocator };
+    var buff: [@sizeOf(linux.nlmsghdr)]u8 = [_]u8{0} ** @sizeOf(linux.nlmsghdr);
+    const hdr = linux.nlmsghdr{
+        .len = 0,
+        .type = .RTM_NEWROUTE,
+        .flags = 0,
+        .seq = 0,
+        .pid = 0,
+    };
+    @memcpy(buff[0..@sizeOf(linux.nlmsghdr)], std.mem.asBytes(&hdr));
+    try std.testing.expectError(error.InvalidResponse, get.parseMessage(&buff));
+}
+
+test "parseMessage rejects malformed route attribute length" {
+    var get = Get{ .msg = undefined, .nl = undefined, .allocator = std.testing.allocator };
+    const total_len = @sizeOf(linux.nlmsghdr) + @sizeOf(RouteMessage.RouteHeader) + @sizeOf(Attr);
+    var buff: [total_len]u8 = [_]u8{0} ** total_len;
+
+    const hdr = linux.nlmsghdr{
+        .len = @intCast(total_len),
+        .type = .RTM_NEWROUTE,
+        .flags = 0,
+        .seq = 0,
+        .pid = 0,
+    };
+    @memcpy(buff[0..@sizeOf(linux.nlmsghdr)], std.mem.asBytes(&hdr));
+
+    const route_hdr = RouteMessage.RouteHeader{};
+    const route_off = @sizeOf(linux.nlmsghdr);
+    @memcpy(buff[route_off .. route_off + @sizeOf(RouteMessage.RouteHeader)], std.mem.asBytes(&route_hdr));
+
+    const bad_attr = Attr{ .len = @intCast(@sizeOf(Attr) - 1), .type = .Gateway };
+    const attr_off = route_off + @sizeOf(RouteMessage.RouteHeader);
+    @memcpy(buff[attr_off .. attr_off + @sizeOf(Attr)], std.mem.asBytes(&bad_attr));
+
+    try std.testing.expectError(error.InvalidResponse, get.parseMessage(&buff));
+}
+
+test "parseMessage rejects route attribute overrunning frame" {
+    var get = Get{ .msg = undefined, .nl = undefined, .allocator = std.testing.allocator };
+    const total_len = @sizeOf(linux.nlmsghdr) + @sizeOf(RouteMessage.RouteHeader) + @sizeOf(Attr);
+    var buff: [total_len]u8 = [_]u8{0} ** total_len;
+
+    const hdr = linux.nlmsghdr{
+        .len = @intCast(total_len),
+        .type = .RTM_NEWROUTE,
+        .flags = 0,
+        .seq = 0,
+        .pid = 0,
+    };
+    @memcpy(buff[0..@sizeOf(linux.nlmsghdr)], std.mem.asBytes(&hdr));
+
+    const route_hdr = RouteMessage.RouteHeader{};
+    const route_off = @sizeOf(linux.nlmsghdr);
+    @memcpy(buff[route_off .. route_off + @sizeOf(RouteMessage.RouteHeader)], std.mem.asBytes(&route_hdr));
+
+    const bad_attr = Attr{ .len = @intCast(@sizeOf(Attr) + 8), .type = .Gateway };
+    const attr_off = route_off + @sizeOf(RouteMessage.RouteHeader);
+    @memcpy(buff[attr_off .. attr_off + @sizeOf(Attr)], std.mem.asBytes(&bad_attr));
+
+    try std.testing.expectError(error.InvalidResponse, get.parseMessage(&buff));
+}
+
+test "parseMessage repeated parse/deinit does not leak" {
+    var get = Get{ .msg = undefined, .nl = undefined, .allocator = std.testing.allocator };
+    const total_len = @sizeOf(linux.nlmsghdr) + @sizeOf(RouteMessage.RouteHeader);
+    var buff: [total_len]u8 = [_]u8{0} ** total_len;
+
+    const hdr = linux.nlmsghdr{
+        .len = @intCast(total_len),
+        .type = .RTM_NEWROUTE,
+        .flags = 0,
+        .seq = 0,
+        .pid = 0,
+    };
+    @memcpy(buff[0..@sizeOf(linux.nlmsghdr)], std.mem.asBytes(&hdr));
+
+    const route_hdr = RouteMessage.RouteHeader{};
+    const route_off = @sizeOf(linux.nlmsghdr);
+    @memcpy(buff[route_off .. route_off + @sizeOf(RouteMessage.RouteHeader)], std.mem.asBytes(&route_hdr));
+
+    var i: usize = 0;
+    while (i < 128) : (i += 1) {
+        var parsed = (try get.parseMessage(&buff)).?;
+        parsed.deinit();
+    }
+}
+
+test "parseMessage rejects IPv6 gateway payload for unsupported family" {
+    var get = Get{ .msg = undefined, .nl = undefined, .allocator = std.testing.allocator };
+    const payload_len = 16;
+    const total_len = @sizeOf(linux.nlmsghdr) + @sizeOf(RouteMessage.RouteHeader) + @sizeOf(Attr) + payload_len;
+    var buff: [total_len]u8 = [_]u8{0} ** total_len;
+
+    const hdr = linux.nlmsghdr{
+        .len = @intCast(total_len),
+        .type = .RTM_NEWROUTE,
+        .flags = 0,
+        .seq = 0,
+        .pid = 0,
+    };
+    @memcpy(buff[0..@sizeOf(linux.nlmsghdr)], std.mem.asBytes(&hdr));
+
+    const route_hdr = RouteMessage.RouteHeader{ .family = linux.AF.INET6 };
+    const route_off = @sizeOf(linux.nlmsghdr);
+    @memcpy(buff[route_off .. route_off + @sizeOf(RouteMessage.RouteHeader)], std.mem.asBytes(&route_hdr));
+
+    const gateway_attr = Attr{ .len = @intCast(@sizeOf(Attr) + payload_len), .type = .Gateway };
+    const attr_off = route_off + @sizeOf(RouteMessage.RouteHeader);
+    @memcpy(buff[attr_off .. attr_off + @sizeOf(Attr)], std.mem.asBytes(&gateway_attr));
+
+    try std.testing.expectError(error.UnsupportedAddressFamily, get.parseMessage(&buff));
 }

@@ -26,7 +26,8 @@ pub fn deinit(self: *Self) void {
 }
 
 pub fn send(self: *Self, msg: []const u8) !void {
-    std.debug.assert(try std.posix.send(self.fd, msg, 0) == msg.len);
+    const sent = try std.posix.send(self.fd, msg, 0);
+    if (sent != msg.len) return error.ShortWrite;
 }
 
 pub fn recv(self: *Self, buff: []u8) !usize {
@@ -45,6 +46,7 @@ pub fn recv_ack(self: *Self) !void {
     }
 
     const header = std.mem.bytesAsValue(linux.nlmsghdr, buff[0..@sizeOf(linux.nlmsghdr)]);
+    if (header.len < @sizeOf(linux.nlmsghdr) or header.len > n) return error.InvalidResponse;
     if (header.type == .DONE) {
         return;
     } else if (header.type == .ERROR) { // ACK/NACK response
@@ -99,6 +101,7 @@ pub fn linkDel(self: *Self, index: c_int) !void {
 
 pub fn addrAdd(self: *Self, options: addr.AddrAdd.Options) !void {
     var a = addr.AddrAdd.init(self.allocator, self, options);
+    defer a.msg.deinit();
     return a.exec();
 }
 

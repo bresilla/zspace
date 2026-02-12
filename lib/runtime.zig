@@ -13,6 +13,10 @@ pub const InitWarning = enum {
 pub const InitResult = struct {
     warnings: std.EnumSet(InitWarning) = std.EnumSet(InitWarning).initEmpty(),
 
+    pub fn ok(self: InitResult) bool {
+        return self.warning_count() == 0;
+    }
+
     pub fn has_warning(self: InitResult, warning: InitWarning) bool {
         return self.warnings.contains(warning);
     }
@@ -85,4 +89,5 @@ test "init result warning set tracks unique warnings" {
     try std.testing.expect(result.has_warning(.RuntimeDirUnavailable));
     try std.testing.expect(result.has_warning(.CgroupControllerWriteFailed));
     try std.testing.expectEqual(@as(usize, 2), result.warning_count());
+    try std.testing.expect(!result.ok());
 }

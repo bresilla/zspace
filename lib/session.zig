@@ -14,8 +14,13 @@ pub const Session = struct {
     container: Container,
     pid: std.posix.pid_t,
     status: StatusOptions,
+    runtime_init: runtime.InitResult,
     lock_file: ?std.fs.File = null,
     waited: bool = false,
+
+    pub fn runtimeWarnings(self: Session) runtime.InitResult {
+        return self.runtime_init;
+    }
 
     pub fn deinit(self: *Session) void {
         if (self.lock_file) |f| {
@@ -34,10 +39,15 @@ pub fn spawn(jail_config: JailConfig, allocator: std.mem.Allocator) !Session {
         try openOrCreateAndLockFile(path)
     else
         null;
+    errdefer if (lock_file) |f| f.close();
 
     const runtime_init = runtime.init();
     if (runtime_init.warning_count() > 0) {
+        try status.emitRuntimeInitWarningsWithOptions(jail_config.status, runtime_init.warning_count());
         std.log.warn("runtime init completed with {} warning(s)", .{runtime_init.warning_count()});
+        if (jail_config.runtime.fail_on_runtime_warnings) {
+            return error.RuntimeInitWarning;
+        }
     }
     var container = try Container.init(jail_config, allocator);
     const pid = try container.spawn();
@@ -53,8 +63,24 @@ pub fn spawn(jail_config: JailConfig, allocator: std.mem.Allocator) !Session {
         .container = container,
         .pid = pid,
         .status = jail_config.status,
+        .runtime_init = runtime_init,
         .lock_file = lock_file,
     };
+}
+
+test "runtime warning policy can fail fast" {
+    var result = runtime.InitResult{};
+    result.warnings.insert(.RuntimeDirUnavailable);
+
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/",
+        .cmd = &.{"/bin/sh"},
+        .runtime = .{ .fail_on_runtime_warnings = true },
+    };
+
+    try std.testing.expect(cfg.runtime.fail_on_runtime_warnings);
+    try std.testing.expect(result.warning_count() == 1);
 }
 
 pub fn wait(session: *Session) !RunOutcome {

@@ -64,7 +64,7 @@ pub fn setResourceMax(self: *Cgroup, resource: Resource, limit: []const u8) !voi
     defer self.allocator.free(path);
     var file = try std.fs.openFileAbsolute(path, .{ .mode = .read_write });
     defer file.close();
-    std.debug.assert(try file.write(limit) == limit.len);
+    try file.writeAll(limit);
 }
 
 pub fn enterCgroup(self: *Cgroup, pid: linux.pid_t) !void {

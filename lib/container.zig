@@ -29,6 +29,7 @@ const ChildProcessArgs = struct {
 };
 
 const Container = @This();
+var pid1_forward_target: c.sig_atomic_t = 0;
 name: []const u8,
 instance_id: []const u8,
 cmd: []const []const u8,
@@ -74,9 +75,9 @@ fn initNetwork(self: *Container) !void {
     }
 }
 
-fn sethostname(self: *Container) void {
+fn sethostname(self: *Container) !void {
     const value = self.runtime.hostname orelse self.name;
-    _ = linux.syscall2(.sethostname, @intFromPtr(value.ptr), value.len);
+    try checkErr(linux.syscall2(.sethostname, @intFromPtr(value.ptr), value.len), error.SetHostnameFailed);
 }
 
 pub fn run(self: *Container) !linux.pid_t {
@@ -178,7 +179,7 @@ pub fn wait(self: *Container, pid: linux.pid_t) !u8 {
 fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t, setup_ready_fd: ?i32) !void {
     try process_exec.prepare(self.allocator, uid, gid, self.process, self.security, self.namespace_fds);
 
-    self.sethostname();
+    try self.sethostname();
     try self.fs.setup(self.isolation.mount);
     if (self.process.chdir) |target| {
         std.posix.chdir(target) catch return error.ChdirFailed;
@@ -272,8 +273,45 @@ fn execAsPid1(self: *Container, uid: linux.uid_t, gid: linux.gid_t, setup_ready_
         childExit(0);
     }
 
-    const wait_res = std.posix.waitpid(child_pid, 0);
-    return decodeWaitStatus(wait_res.status);
+    try installPid1SignalForwarding(child_pid);
+
+    const code = try waitMainChildAsPid1(child_pid);
+    reapChildrenNonBlocking();
+    pid1_forward_target = 0;
+    return code;
+}
+
+fn installPid1SignalForwarding(child_pid: linux.pid_t) !void {
+    pid1_forward_target = @intCast(child_pid);
+
+    if (c.signal(c.SIGTERM, pid1ForwardSignalHandler) == c.SIG_ERR) {
+        return error.SignalInstallFailed;
+    }
+    if (c.signal(c.SIGINT, pid1ForwardSignalHandler) == c.SIG_ERR) {
+        return error.SignalInstallFailed;
+    }
+}
+
+fn pid1ForwardSignalHandler(sig: c_int) callconv(.c) void {
+    const target: linux.pid_t = @intCast(pid1_forward_target);
+    if (target <= 0) return;
+    _ = linux.syscall2(.kill, @as(usize, @intCast(target)), @as(usize, @intCast(sig)));
+}
+
+fn waitMainChildAsPid1(main_child_pid: linux.pid_t) !u8 {
+    while (true) {
+        const wait_res = std.posix.waitpid(-1, 0);
+        if (wait_res.pid == main_child_pid) {
+            return decodeWaitStatus(wait_res.status);
+        }
+    }
+}
+
+fn reapChildrenNonBlocking() void {
+    while (true) {
+        const res = std.posix.waitpid(-1, std.posix.W.NOHANG);
+        if (res.pid <= 0) break;
+    }
 }
 
 fn childExit(code: u8) noreturn {

@@ -93,6 +93,7 @@ pub const LinkInfo = struct {
     pub fn deinit(self: *LinkInfo) void {
         for (self.attrs.items) |*attr| {
             switch (attr.*) {
+                .name_owned => |val| self.allocator.free(val),
                 .link_info => |*val| val.deinit(),
                 else => {},
             }
@@ -141,4 +142,11 @@ pub fn addAttr(self: *Link, attr: LinkAttribute) !void {
 
 pub fn deinit(self: *Link) void {
     self.msg.deinit();
+}
+
+test "LinkInfo deinit frees owned name attributes" {
+    var info = LinkInfo.init(std.testing.allocator);
+    const name_buf = try std.testing.allocator.dupe(u8, "veth-test");
+    try info.attrs.append(std.testing.allocator, .{ .name_owned = name_buf });
+    info.deinit();
 }

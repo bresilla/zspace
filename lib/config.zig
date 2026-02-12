@@ -149,6 +149,7 @@ pub const RuntimeOptions = struct {
     gid: ?std.os.linux.gid_t = null,
     hostname: ?[]const u8 = null,
     as_pid_1: bool = false,
+    fail_on_runtime_warnings: bool = false,
 };
 
 pub const StatusOptions = struct {
@@ -162,6 +163,7 @@ pub const StatusOptions = struct {
     };
 
     pub const EventKind = enum {
+        runtime_init_warnings,
         spawned,
         setup_finished,
         exited,
@@ -172,6 +174,7 @@ pub const StatusOptions = struct {
         pid: std.posix.pid_t,
         timestamp: i64,
         exit_code: ?u8 = null,
+        warning_count: ?u16 = null,
         ns_ids: NamespaceIds = .{},
     };
 
