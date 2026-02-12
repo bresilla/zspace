@@ -41,7 +41,8 @@ pub const AttrType = enum(u16) {
     Dport = c.RTA_DPORT,
     Id = c.RTA_NH_ID,
 };
-// TODO: support IPv6
+/// Route attribute payloads currently model IPv4 fields only.
+/// IPv6 route families are rejected by route parser validation.
 pub const Attr = union(enum) {
     destination: [4]u8,
     gateway: [4]u8,
