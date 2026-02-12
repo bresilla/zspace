@@ -696,8 +696,8 @@ fn maybeApplyPending(allocator: std.mem.Allocator, actions: *std.ArrayList(voidb
 }
 
 fn nextArg(args: []const []const u8, i: *usize, option: []const u8) ![]const u8 {
+    _ = option;
     if (i.* + 1 >= args.len) {
-        std.debug.print("missing value for {s}\n", .{option});
         return error.MissingOptionValue;
     }
     i.* += 1;
