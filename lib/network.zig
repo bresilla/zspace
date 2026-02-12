@@ -55,10 +55,7 @@ pub fn enableNat(self: *Net) !void {
     nat_state_mutex.lock();
     defer nat_state_mutex.unlock();
 
-    if (nat_configured and
-        nat_ifname_cache_len == default_ifname.len and
-        std.mem.eql(u8, nat_ifname_cache[0..nat_ifname_cache_len], default_ifname))
-    {
+    if (!natNeedsReconfigure(nat_configured, nat_ifname_cache[0..nat_ifname_cache_len], default_ifname)) {
         return;
     }
 
@@ -66,6 +63,12 @@ pub fn enableNat(self: *Net) !void {
     @memcpy(nat_ifname_cache[0..default_ifname.len], default_ifname);
     nat_ifname_cache_len = default_ifname.len;
     nat_configured = true;
+}
+
+fn natNeedsReconfigure(is_configured: bool, configured_ifname: []const u8, target_ifname: []const u8) bool {
+    if (!is_configured) return true;
+    if (configured_ifname.len != target_ifname.len) return true;
+    return !std.mem.eql(u8, configured_ifname, target_ifname);
 }
 
 fn getDefaultGatewayIfNameCached(self: *Net) ![]const u8 {
@@ -264,4 +267,16 @@ pub fn deinit(self: *Net) !void {
     self.nl.deinit();
 
     if (first_err) |err| return err;
+}
+
+test "natNeedsReconfigure returns true when not configured" {
+    try std.testing.expect(natNeedsReconfigure(false, "eth0", "eth0"));
+}
+
+test "natNeedsReconfigure returns false for same ifname" {
+    try std.testing.expect(!natNeedsReconfigure(true, "eth0", "eth0"));
+}
+
+test "natNeedsReconfigure returns true for changed ifname" {
+    try std.testing.expect(natNeedsReconfigure(true, "eth0", "wlan0"));
 }
