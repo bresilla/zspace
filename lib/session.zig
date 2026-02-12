@@ -149,7 +149,9 @@ test "waitForFd errors on closed writer" {
 }
 
 test "openOrCreateAndLockFile acquires exclusive lock" {
-    const tmp_path = "/tmp/voidbox-session-lock-test";
+    const tmp_path = try std.fmt.allocPrint(std.testing.allocator, "/tmp/voidbox-session-lock-test-{}", .{std.time.nanoTimestamp()});
+    defer std.testing.allocator.free(tmp_path);
+    defer std.fs.deleteFileAbsolute(tmp_path) catch {};
 
     var file_a = try openOrCreateAndLockFile(tmp_path);
     defer file_a.close();
