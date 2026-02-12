@@ -72,9 +72,8 @@ fn recv(self: *LinkGet) !LinkMessage {
                     return error.InvalidResponse;
                 },
                 .ERROR => {
-                    if (frame.len < @sizeOf(RtNetLink.NlMsgError)) return error.InvalidResponse;
-                    const response = std.mem.bytesAsValue(RtNetLink.NlMsgError, frame[0..]);
-                    try RtNetLink.handle_ack(response.*);
+                    const err_code = try RtNetLink.parseNetlinkErrorCode(frame);
+                    try RtNetLink.handle_ack_code(err_code);
                     if (parsed) |msg| return msg;
                 },
                 else => {

@@ -62,16 +62,17 @@ fn parseMessage(self: *Get, buff: []u8) !?RouteMessage {
     if (buff.len < @sizeOf(linux.nlmsghdr)) return error.InvalidResponse;
 
     const header = std.mem.bytesAsValue(linux.nlmsghdr, buff[0..@sizeOf(linux.nlmsghdr)]);
+    if (header.len < @sizeOf(linux.nlmsghdr) or header.len > buff.len) return error.InvalidResponse;
+    const frame = buff[0..header.len];
     if (header.type == .ERROR) {
-        if (buff.len < @sizeOf(NetLink.NlMsgError)) return error.InvalidResponse;
-        const response = std.mem.bytesAsValue(NetLink.NlMsgError, buff[0..]);
-        try NetLink.handle_ack(response.*);
+        const err_code = try NetLink.parseNetlinkErrorCode(frame);
+        try NetLink.handle_ack_code(err_code);
         return error.InvalidResponse;
     } else if (header.type == .DONE) {
         return null;
     }
 
-    if (header.len < @sizeOf(linux.nlmsghdr) + @sizeOf(RouteMessage.RouteHeader) or header.len > buff.len) {
+    if (header.len < @sizeOf(linux.nlmsghdr) + @sizeOf(RouteMessage.RouteHeader)) {
         return error.InvalidResponse;
     }
 
@@ -81,12 +82,12 @@ fn parseMessage(self: *Get, buff: []u8) !?RouteMessage {
     const len = header.len;
     msg.hdr = header.*;
 
-    const hdr = std.mem.bytesAsValue(RouteMessage.RouteHeader, buff[@sizeOf(linux.nlmsghdr)..]);
+    const hdr = std.mem.bytesAsValue(RouteMessage.RouteHeader, frame[@sizeOf(linux.nlmsghdr)..]);
     msg.msg.hdr = hdr.*;
 
     var start: usize = @sizeOf(RouteMessage.RouteHeader) + @sizeOf(linux.nlmsghdr);
     while (start + @sizeOf(Attr) <= len) {
-        const attr = std.mem.bytesAsValue(Attr, buff[start .. start + @sizeOf(Attr)]);
+        const attr = std.mem.bytesAsValue(Attr, frame[start .. start + @sizeOf(Attr)]);
         if (attr.len < @sizeOf(Attr)) return error.InvalidResponse;
         if (start + attr.len > len) return error.InvalidResponse;
         const payload_len = attr.len - @sizeOf(Attr);
@@ -95,11 +96,11 @@ fn parseMessage(self: *Get, buff: []u8) !?RouteMessage {
             .Gateway => {
                 if (msg.msg.hdr.family != linux.AF.INET) return error.UnsupportedAddressFamily;
                 if (payload_len != 4) return error.InvalidResponse;
-                try msg.addAttr(.{ .gateway = buff[start + @sizeOf(Attr) .. start + @sizeOf(Attr) + 4][0..4].* });
+                try msg.addAttr(.{ .gateway = frame[start + @sizeOf(Attr) .. start + @sizeOf(Attr) + 4][0..4].* });
             },
             .Oif => {
                 if (payload_len != @sizeOf(u32)) return error.InvalidResponse;
-                const value = std.mem.bytesAsValue(u32, buff[start + @sizeOf(Attr) .. start + @sizeOf(Attr) + @sizeOf(u32)]);
+                const value = std.mem.bytesAsValue(u32, frame[start + @sizeOf(Attr) .. start + @sizeOf(Attr) + @sizeOf(u32)]);
                 try msg.addAttr(.{ .output_if = value.* });
             },
             else => {},

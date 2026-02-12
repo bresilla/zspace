@@ -47,12 +47,12 @@ pub fn recv_ack(self: *Self) !void {
 
     const header = std.mem.bytesAsValue(linux.nlmsghdr, buff[0..@sizeOf(linux.nlmsghdr)]);
     if (header.len < @sizeOf(linux.nlmsghdr) or header.len > n) return error.InvalidResponse;
+    const frame = buff[0..header.len];
     if (header.type == .DONE) {
         return;
     } else if (header.type == .ERROR) { // ACK/NACK response
-        if (n < @sizeOf(NlMsgError)) return error.InvalidResponse;
-        const response = std.mem.bytesAsValue(NlMsgError, buff[0..]);
-        return handle_ack(response.*);
+        const err_code = try parseNetlinkErrorCode(frame);
+        return handle_ack_code(err_code);
     }
 
     return error.InvalidResponse;
@@ -65,7 +65,11 @@ pub const NlMsgError = struct {
 };
 
 pub fn handle_ack(msg: NlMsgError) !void {
-    const code: linux.E = @enumFromInt(-1 * msg.err);
+    return handle_ack_code(msg.err);
+}
+
+pub fn handle_ack_code(err_code: i32) !void {
+    const code: linux.E = @enumFromInt(-1 * err_code);
     if (code != .SUCCESS) {
         log.info("err: {}", .{code});
         return switch (code) {
@@ -73,6 +77,12 @@ pub fn handle_ack(msg: NlMsgError) !void {
             else => error.Error,
         };
     }
+}
+
+pub fn parseNetlinkErrorCode(frame: []const u8) !i32 {
+    if (frame.len < @sizeOf(linux.nlmsghdr) + @sizeOf(i32)) return error.InvalidResponse;
+    const err_ptr = std.mem.bytesAsValue(i32, frame[@sizeOf(linux.nlmsghdr) .. @sizeOf(linux.nlmsghdr) + @sizeOf(i32)]);
+    return err_ptr.*;
 }
 
 pub fn linkAdd(self: *Self, options: link.LinkAdd.Options) !void {
@@ -116,4 +126,28 @@ pub fn routeGet(self: *Self) ![]route.RouteMessage {
     var ls = route.RouteGet.init(self.allocator, self);
     defer ls.msg.deinit();
     return ls.exec();
+}
+
+test "parseNetlinkErrorCode extracts errno field" {
+    const len = @sizeOf(linux.nlmsghdr) + @sizeOf(i32);
+    var buff: [len]u8 = [_]u8{0} ** len;
+
+    const hdr = linux.nlmsghdr{
+        .len = @intCast(len),
+        .type = .ERROR,
+        .flags = 0,
+        .seq = 0,
+        .pid = 0,
+    };
+    const errno_value: i32 = -@as(i32, @intFromEnum(linux.E.EXIST));
+
+    @memcpy(buff[0..@sizeOf(linux.nlmsghdr)], std.mem.asBytes(&hdr));
+    @memcpy(buff[@sizeOf(linux.nlmsghdr) .. @sizeOf(linux.nlmsghdr) + @sizeOf(i32)], std.mem.asBytes(&errno_value));
+
+    try std.testing.expectEqual(errno_value, try parseNetlinkErrorCode(&buff));
+}
+
+test "parseNetlinkErrorCode rejects truncated frame" {
+    var buff: [@sizeOf(linux.nlmsghdr)]u8 = [_]u8{0} ** @sizeOf(linux.nlmsghdr);
+    try std.testing.expectError(error.InvalidResponse, parseNetlinkErrorCode(&buff));
 }
