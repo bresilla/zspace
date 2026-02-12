@@ -73,16 +73,6 @@ pub fn recv_ack(self: *Self) !void {
     return error.InvalidResponse;
 }
 
-pub const NlMsgError = struct {
-    hdr: linux.nlmsghdr,
-    err: i32,
-    msg: linux.nlmsghdr,
-};
-
-pub fn handle_ack(msg: NlMsgError) !void {
-    return handle_ack_code(msg.err);
-}
-
 pub fn handle_ack_code(err_code: i32) !void {
     if (err_code > 0) return error.InvalidResponse;
     if (err_code == std.math.minInt(i32)) return error.InvalidResponse;
