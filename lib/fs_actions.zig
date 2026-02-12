@@ -531,3 +531,22 @@ test "rootedPath maps chroot paths to host paths" {
     defer std.testing.allocator.free(p2);
     try std.testing.expectEqualStrings("/srv/rootfs/tmp/.voidbox-overlay/xyz", p2);
 }
+
+test "cleanupInstanceArtifacts removes data and overlay trees" {
+    const instance_id = "itest-cleanup-artifacts";
+
+    const data_dir = try std.fmt.allocPrint(std.testing.allocator, "/tmp/.voidbox-data/{s}", .{instance_id});
+    defer std.testing.allocator.free(data_dir);
+    const overlay_dir = try std.fmt.allocPrint(std.testing.allocator, "/tmp/.voidbox-overlay/{s}", .{instance_id});
+    defer std.testing.allocator.free(overlay_dir);
+
+    std.fs.deleteTreeAbsolute(data_dir) catch {};
+    std.fs.deleteTreeAbsolute(overlay_dir) catch {};
+    try ensurePath(data_dir);
+    try ensurePath(overlay_dir);
+
+    cleanupInstanceArtifacts("/", instance_id);
+
+    try std.testing.expect(!sourceExists(data_dir));
+    try std.testing.expect(!sourceExists(overlay_dir));
+}
