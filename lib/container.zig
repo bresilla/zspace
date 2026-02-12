@@ -213,7 +213,8 @@ fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t, setup_ready_fd:
 
 fn waitForFd(fd: i32) !void {
     var buf: [1]u8 = undefined;
-    _ = try readOneByte(fd, &buf);
+    const n = try readOneByte(fd, &buf);
+    if (n != 1) return error.SyncFdClosed;
 }
 
 fn readOneByte(fd: i32, out: *[1]u8) !usize {
@@ -392,4 +393,22 @@ test "forwarded signal set includes common termination signals" {
     try std.testing.expect(has_int);
     try std.testing.expect(has_hup);
     try std.testing.expect(has_quit);
+}
+
+test "waitForFd consumes synchronization byte" {
+    const pipefds = try std.posix.pipe();
+    defer std.posix.close(pipefds[0]);
+    defer std.posix.close(pipefds[1]);
+
+    const one = [_]u8{1};
+    _ = try std.posix.write(pipefds[1], &one);
+    try waitForFd(pipefds[0]);
+}
+
+test "waitForFd errors when synchronization writer is closed" {
+    const pipefds = try std.posix.pipe();
+    defer std.posix.close(pipefds[0]);
+    std.posix.close(pipefds[1]);
+
+    try std.testing.expectError(error.SyncFdClosed, waitForFd(pipefds[0]));
 }
