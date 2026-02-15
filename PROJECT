@@ -1,0 +1,12 @@
+# ==============================================================================
+# PROJECT file - Project configuration
+# ==============================================================================
+# Format:
+#   Line 1: Project name (first non-comment, non-section line)
+#   Line 2: Project version (second non-comment, non-section line)
+#
+# Lines starting with # are comments
+# ==============================================================================
+
+voidbox
+0.0.3
