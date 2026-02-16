@@ -6,30 +6,7 @@ const posix = std.posix;
 pub fn main() !void {
     const allocator = std.heap.c_allocator;
 
-    // Test 1: user + mount only (no UTS)
-    try runTest(allocator, "TEST1: user+mount", .{
-        .user = true,
-        .net = false,
-        .mount = true,
-        .pid = false,
-        .uts = false,
-        .ipc = false,
-        .cgroup = false,
-    });
-
-    // Test 2: user + mount + uts
-    try runTest(allocator, "TEST2: user+mount+uts", .{
-        .user = true,
-        .net = false,
-        .mount = true,
-        .pid = false,
-        .uts = true,
-        .ipc = false,
-        .cgroup = false,
-    });
-
-    // Test 3: user + mount + pid + uts + ipc (sandbox profile)
-    try runTest(allocator, "TEST3: sandbox", .{
+    try runTest(allocator, "SANDBOX", .{
         .user = true,
         .net = false,
         .mount = true,
@@ -89,13 +66,11 @@ fn runTest(allocator: std.mem.Allocator, label: []const u8, iso: voidbox.Isolati
             posix.exit(1);
         };
 
-        writeLog("{s} isolation OK, exec'ing...\n", .{label});
-
         const envp = [_:null]?[*:0]const u8{null};
         const argv = [_:null]?[*:0]const u8{
             "/bin/sh",
             "-c",
-            "echo uid=$(id -u) hostname=$(hostname) pid=$$",
+            "echo uid=$(id -u) hostname=$(hostname) pid=$$; echo '---'; ls /",
             null,
         };
 
