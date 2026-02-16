@@ -451,6 +451,53 @@ pub fn applyIsolationInChild(jail_config: JailConfig, allocator: std.mem.Allocat
     const instance_id = try Container.makeInstanceId(allocator, jail_config.name);
     defer allocator.free(instance_id);
 
+    // Create user namespace first if needed (must be before other namespaces)
+    if (jail_config.isolation.user and jail_config.namespace_fds.user == null) {
+        // Get real UID/GID BEFORE creating namespace
+        const uid = linux.getuid();
+        const gid = linux.getgid();
+
+        try checkErr(linux.unshare(linux.CLONE.NEWUSER), error.UnshareUserNsFailed);
+
+        // Write uid/gid mappings from inside the namespace (use "self" not pid)
+
+        // Step 1: Disable setgroups
+        if (std.fs.openFileAbsolute("/proc/self/setgroups", .{ .mode = .write_only })) |f| {
+            defer f.close();
+            _ = f.write("deny\n") catch {};
+        } else |_| {}
+
+        // Step 2: Write uid_map
+        {
+            const uid_map = try std.fs.openFileAbsolute("/proc/self/uid_map", .{ .mode = .write_only });
+            defer uid_map.close();
+            var buf: [64]u8 = undefined;
+            const line = try std.fmt.bufPrint(&buf, "0 {} 1\n", .{uid});
+            _ = try uid_map.write(line);
+        }
+
+        // Step 3: Write gid_map
+        {
+            const gid_map = try std.fs.openFileAbsolute("/proc/self/gid_map", .{ .mode = .write_only });
+            defer gid_map.close();
+            var buf: [64]u8 = undefined;
+            const line = try std.fmt.bufPrint(&buf, "0 {} 1\n", .{gid});
+            _ = try gid_map.write(line);
+        }
+    }
+
+    // Create other namespaces if needed (after user namespace)
+    var unshare_flags: u32 = 0;
+    if (jail_config.isolation.mount and jail_config.namespace_fds.mount == null) unshare_flags |= linux.CLONE.NEWNS;
+    if (jail_config.isolation.net and jail_config.namespace_fds.net == null) unshare_flags |= linux.CLONE.NEWNET;
+    if (jail_config.isolation.uts and jail_config.namespace_fds.uts == null) unshare_flags |= linux.CLONE.NEWUTS;
+    if (jail_config.isolation.ipc and jail_config.namespace_fds.ipc == null) unshare_flags |= linux.CLONE.NEWIPC;
+    if (jail_config.isolation.cgroup and jail_config.namespace_fds.mount == null) unshare_flags |= linux.CLONE.NEWCGROUP;
+
+    if (unshare_flags != 0) {
+        try checkErr(linux.unshare(unshare_flags), error.UnshareNsFailed);
+    }
+
     // Attach to existing namespaces if provided
     if (jail_config.namespace_fds.user != null or
         jail_config.namespace_fds.mount != null or
