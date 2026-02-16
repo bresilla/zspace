@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.8] - 2026-02-16
+
+### <!-- 0 -->⛰️  Features
+
+- Improve filesystem isolation flexibility
+- Improve user namespace handling and embedder example
+
 ## [0.0.7] - 2026-02-16
 
 ### <!-- 1 -->🐛 Bug Fixes

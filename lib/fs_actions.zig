@@ -9,6 +9,105 @@ const MountedTarget = struct {
     path: []const u8,
 };
 
+/// Execute fs_actions with all destination paths prefixed by `root_prefix`.
+/// Used for the tmpfs+pivot approach: bind-mounts go into the new root dir
+/// before pivot_root makes it the actual root.
+pub fn executePrefixed(instance_id: []const u8, actions: []const FsAction, root_prefix: []const u8) !void {
+    const alloc = std.heap.page_allocator;
+
+    for (actions) |action| {
+        switch (action) {
+            .bind => |mp| {
+                const dest = try prefixedPath(alloc, root_prefix, mp.dest);
+                defer alloc.free(dest);
+                try ensurePath(dest);
+                try mountPath(mp.src, dest, null, linux.MS.BIND | linux.MS.REC, null, error.BindMount);
+            },
+            .bind_try => |mp| {
+                if (!sourceExists(mp.src)) continue;
+                const dest = try prefixedPath(alloc, root_prefix, mp.dest);
+                defer alloc.free(dest);
+                try ensurePath(dest);
+                try mountPath(mp.src, dest, null, linux.MS.BIND | linux.MS.REC, null, error.BindMount);
+            },
+            .ro_bind => |mp| {
+                const dest = try prefixedPath(alloc, root_prefix, mp.dest);
+                defer alloc.free(dest);
+                try ensurePath(dest);
+                try mountPath(mp.src, dest, null, linux.MS.BIND | linux.MS.REC, null, error.BindMount);
+                try mountPath(null, dest, null, linux.MS.BIND | linux.MS.REMOUNT | linux.MS.RDONLY, null, error.RemountReadOnly);
+            },
+            .ro_bind_try => |mp| {
+                if (!sourceExists(mp.src)) continue;
+                const dest = try prefixedPath(alloc, root_prefix, mp.dest);
+                defer alloc.free(dest);
+                try ensurePath(dest);
+                try mountPath(mp.src, dest, null, linux.MS.BIND | linux.MS.REC, null, error.BindMount);
+                try mountPath(null, dest, null, linux.MS.BIND | linux.MS.REMOUNT | linux.MS.RDONLY, null, error.RemountReadOnly);
+            },
+            .dev_bind => |mp| {
+                const dest = try prefixedPath(alloc, root_prefix, mp.dest);
+                defer alloc.free(dest);
+                try ensurePath(dest);
+                try mountPath(mp.src, dest, null, linux.MS.BIND | linux.MS.REC, null, error.BindMount);
+            },
+            .dev_bind_try => |mp| {
+                if (!sourceExists(mp.src)) continue;
+                const dest = try prefixedPath(alloc, root_prefix, mp.dest);
+                defer alloc.free(dest);
+                try ensurePath(dest);
+                try mountPath(mp.src, dest, null, linux.MS.BIND | linux.MS.REC, null, error.BindMount);
+            },
+            .proc => |dest| {
+                const full = try prefixedPath(alloc, root_prefix, dest);
+                defer alloc.free(full);
+                try ensurePath(full);
+                // In pre-pivot context, mounting proc fs type may fail; fall back to bind
+                mountPath("proc", full, "proc", 0, null, error.MountProc) catch {
+                    try mountPath("/proc", full, null, linux.MS.BIND | linux.MS.REC, null, error.BindMount);
+                };
+            },
+            .dev => |dest| {
+                const full = try prefixedPath(alloc, root_prefix, dest);
+                defer alloc.free(full);
+                try ensurePath(full);
+                mountPath("devtmpfs", full, "devtmpfs", 0, null, error.MountDevTmpFs) catch {
+                    try mountPath("/dev", full, null, linux.MS.BIND | linux.MS.REC, null, error.BindMount);
+                };
+            },
+            .tmpfs => |tmpfs| {
+                const full = try prefixedPath(alloc, root_prefix, tmpfs.dest);
+                defer alloc.free(full);
+                try ensurePath(full);
+                try mountPath("tmpfs", full, "tmpfs", 0, null, error.MountTmpFs);
+            },
+            .dir => |dir_action| {
+                const full = try prefixedPath(alloc, root_prefix, dir_action.path);
+                defer alloc.free(full);
+                try ensurePath(full);
+            },
+            .symlink => |symlink| {
+                const full = try prefixedPath(alloc, root_prefix, symlink.path);
+                defer alloc.free(full);
+                const parent = std.fs.path.dirname(full);
+                if (parent) |p| try ensurePath(p);
+                std.fs.cwd().symLink(symlink.target, trimPath(full), .{}) catch |err| switch (err) {
+                    error.PathAlreadyExists => {},
+                    else => return err,
+                };
+            },
+            // Remaining actions (overlay, data_bind, etc.) not yet supported in prefixed mode
+            else => {
+                _ = instance_id;
+            },
+        }
+    }
+}
+
+fn prefixedPath(alloc: std.mem.Allocator, prefix: []const u8, path: []const u8) ![]u8 {
+    return std.fmt.allocPrint(alloc, "{s}{s}", .{ prefix, path });
+}
+
 pub fn execute(instance_id: []const u8, actions: []const FsAction) !void {
     var overlay_sources = std.ArrayList(OverlaySource).empty;
     defer overlay_sources.deinit(std.heap.page_allocator);

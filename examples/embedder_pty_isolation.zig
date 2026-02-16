@@ -1,88 +1,102 @@
 const std = @import("std");
 const voidbox = @import("voidbox");
 const linux = std.os.linux;
+const posix = std.posix;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.heap.c_allocator;
 
-    // Configuration for filesystem isolation
+    try runTest(allocator, "SANDBOX", .{
+        .user = true,
+        .net = false,
+        .mount = true,
+        .pid = true,
+        .uts = true,
+        .ipc = true,
+        .cgroup = false,
+    });
+}
+
+fn runTest(allocator: std.mem.Allocator, label: []const u8, iso: voidbox.IsolationOptions) !void {
+    std.debug.print("\n{s}...\n", .{label});
+
     const config = voidbox.JailConfig{
         .name = "pty-sandbox",
         .rootfs_path = "/",
-        .cmd = &.{"/bin/bash"},
-        .isolation = .{
-            .user = true,
-            .net = true,
-            .mount = true,
-            .pid = true,
-            .uts = false,
-            .ipc = true,
-            .cgroup = false,
-        },
+        .cmd = &.{"/bin/sh"},
+        .isolation = iso,
         .runtime = .{
-            .use_pivot_root = false, // Use chroot for simplicity in this example
-            .hostname = "sandbox",
+            .use_pivot_root = false,
+            .hostname = if (iso.uts) "sandbox" else null,
         },
-        .fs_actions = &.{
-            .{ .proc = "/proc" },
-            .{ .dev = "/dev" },
-            .{ .tmpfs = .{ .dest = "/tmp" } },
+        .security = .{
+            .no_new_privs = true,
+            .seccomp_mode = .disabled,
+        },
+        .fs_actions = if (iso.mount) &.{
             .{ .ro_bind = .{ .src = "/usr", .dest = "/usr" } },
             .{ .ro_bind = .{ .src = "/lib", .dest = "/lib" } },
             .{ .ro_bind = .{ .src = "/lib64", .dest = "/lib64" } },
             .{ .ro_bind = .{ .src = "/bin", .dest = "/bin" } },
-        },
+            .{ .ro_bind = .{ .src = "/etc", .dest = "/etc" } },
+            .{ .proc = "/proc" },
+            .{ .dev = "/dev" },
+            .{ .tmpfs = .{ .dest = "/tmp" } },
+        } else &.{},
     };
 
     try voidbox.validate(config);
 
-    std.debug.print("=== PTY-Friendly Isolation Example ===\n", .{});
-    std.debug.print("This example demonstrates using applyIsolationInChild() for PTY setup.\n", .{});
-    std.debug.print("In a real PTY scenario, you would setup pseudo-terminals before applying isolation.\n\n", .{});
+    const sync_pipe = try posix.pipe();
+    const done_pipe = try posix.pipe();
 
-    // Fork for PTY setup
-    const pid = try std.posix.fork();
+    const pid = try posix.fork();
 
     if (pid == 0) {
-        // Child process
+        posix.close(sync_pipe[0]);
+        posix.close(done_pipe[1]);
 
-        // TODO: Setup PTY here (pseudo-terminal for interactive shell)
-        // This is where Hexe would setup PTY master/slave
-        // For this example, we skip PTY setup and just demonstrate the API
-
-        std.debug.print("[Child] Applying voidbox isolation...\n", .{});
-
-        // Apply voidbox isolation in the already-forked child
-        voidbox.applyIsolationInChild(config, allocator) catch |err| {
-            std.debug.print("[Child] Failed to apply isolation: {}\n", .{err});
-            std.posix.exit(1);
+        const sync = voidbox.UsernsSync{
+            .ready_fd = sync_pipe[1],
+            .done_fd = done_pipe[0],
         };
 
-        std.debug.print("[Child] Isolation applied successfully. Exec'ing command...\n", .{});
+        voidbox.applyIsolationInChildSync(config, allocator, sync) catch |err| {
+            writeLog("{s} FAILED: {}\n", .{ label, err });
+            posix.exit(1);
+        };
 
-        // Now exec the command
         const envp = [_:null]?[*:0]const u8{null};
         const argv = [_:null]?[*:0]const u8{
-            "/bin/echo",
-            "Hello from isolated environment!",
+            "/bin/sh",
+            "-c",
+            "echo uid=$(id -u) hostname=$(hostname) pid=$$; echo '---'; ls /",
             null,
         };
 
-        const err = linux.execve("/bin/echo", &argv, &envp);
-        std.debug.print("[Child] execve failed: {}\n", .{err});
-        std.posix.exit(127);
+        const err = linux.execve("/bin/sh", &argv, &envp);
+        writeLog("{s} execve failed: {}\n", .{ label, err });
+        posix.exit(127);
     }
 
-    // Parent process - wait for child
-    std.debug.print("[Parent] Waiting for child process (pid={d})...\n", .{pid});
-    const wait_result = std.posix.waitpid(pid, 0);
+    // Parent
+    posix.close(sync_pipe[1]);
+    posix.close(done_pipe[0]);
 
-    // Decode wait status
-    const c = @cImport({
-        @cInclude("sys/wait.h");
-    });
+    var buf: [1]u8 = undefined;
+    _ = posix.read(sync_pipe[0], &buf) catch {};
+    posix.close(sync_pipe[0]);
+
+    voidbox.namespace.writeUserRootMappings(allocator, pid) catch |err| {
+        std.debug.print("  writeUserRootMappings failed: {}\n", .{err});
+        posix.exit(1);
+    };
+
+    _ = posix.write(done_pipe[1], &[_]u8{1}) catch {};
+    posix.close(done_pipe[1]);
+
+    const wait_result = posix.waitpid(pid, 0);
+    const c = @cImport(@cInclude("sys/wait.h"));
     const status = @as(c_int, @bitCast(wait_result.status));
     const exit_code: u8 = if (c.WIFEXITED(status))
         @intCast(c.WEXITSTATUS(status))
@@ -91,6 +105,18 @@ pub fn main() !void {
     else
         1;
 
-    std.debug.print("[Parent] Child exited with code: {d}\n", .{exit_code});
-    std.posix.exit(exit_code);
+    if (exit_code == 0)
+        std.debug.print("  PASS (exit=0)\n", .{})
+    else
+        std.debug.print("  FAIL (exit={d})\n", .{exit_code});
+}
+
+fn writeLog(comptime fmt: []const u8, args: anytype) void {
+    const f = std.fs.openFileAbsolute("/tmp/voidbox-test.log", .{ .mode = .write_only }) catch
+        std.fs.createFileAbsolute("/tmp/voidbox-test.log", .{}) catch return;
+    defer f.close();
+    f.seekFromEnd(0) catch {};
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
+    _ = f.write(msg) catch {};
 }

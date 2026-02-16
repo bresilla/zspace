@@ -128,6 +128,8 @@ pub fn build(b: *std.Build) !void {
     const vb_step = b.step("vb", "Compile vb CLI binary");
     vb_step.dependOn(&vb.step);
 
+    b.installArtifact(ex_pty);
+
     const examples_step = b.step("examples", "Compile embedder examples");
     examples_step.dependOn(&ex_shell.step);
     examples_step.dependOn(&ex_events.step);
