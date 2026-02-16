@@ -410,6 +410,142 @@ pub fn wait(session: *Session) WaitError!RunOutcome {
     };
 }
 
+/// Apply namespace and filesystem isolation in an already-forked child process
+///
+/// This function is intended for advanced use cases where the caller has already
+/// forked (e.g., for PTY setup) and needs voidbox to apply isolation before exec.
+///
+/// Prerequisites:
+/// - Must be called in child process after fork
+/// - Parent must have already written user namespace mappings (if using user ns)
+/// - Caller is responsible for exec after this returns
+///
+/// This applies:
+/// - Namespace attachments (if namespace_fds provided)
+/// - PID namespace setup (if isolation.pid enabled)
+/// - Security context (uid/gid, capabilities, seccomp, no_new_privs)
+/// - Hostname (if in UTS namespace)
+/// - Filesystem isolation (chroot/pivot_root + fs_actions)
+/// - Network interface setup (if in network namespace)
+///
+/// Example usage:
+///   const pid = try std.posix.fork();
+///   if (pid == 0) {
+///       // Child: setup PTY, then apply isolation
+///       try setupPtyInChild();
+///       try voidbox.applyIsolationInChild(config, allocator);
+///       try std.posix.execveZ(...);
+///   }
+///   // Parent continues...
+///
+pub fn applyIsolationInChild(jail_config: JailConfig, allocator: std.mem.Allocator) !void {
+    const Container = @import("container.zig");
+    const Fs = @import("fs.zig");
+    const Network = @import("network.zig");
+    const process_exec = @import("process_exec.zig");
+    const namespace_sequence = @import("namespace_sequence.zig");
+    const linux = std.os.linux;
+    const checkErr = @import("utils.zig").checkErr;
+
+    // Generate instance ID for filesystem artifacts
+    const instance_id = try Container.makeInstanceId(allocator, jail_config.name);
+    defer allocator.free(instance_id);
+
+    // Attach to existing namespaces if provided
+    if (jail_config.namespace_fds.user != null or
+        jail_config.namespace_fds.mount != null or
+        jail_config.namespace_fds.net != null or
+        jail_config.namespace_fds.uts != null or
+        jail_config.namespace_fds.ipc != null)
+    {
+        try namespace_sequence.attachInitial(jail_config.namespace_fds);
+    }
+
+    // Handle PID namespace if needed
+    if (jail_config.namespace_fds.pid != null) {
+        try namespace_sequence.preparePidNamespace(
+            jail_config.namespace_fds.pid.?,
+            jail_config.isolation.pid
+        );
+
+        // If pid namespace setup requires a second fork, do it
+        if (jail_config.isolation.pid) {
+            const pid = try std.posix.fork();
+            if (pid != 0) {
+                // Parent of second fork - wait for child
+                const wait_res = std.posix.waitpid(pid, 0);
+                const code = decodeWaitStatus(wait_res.status) catch 127;
+                std.posix.exit(code);
+            }
+            // Continue in grandchild
+        }
+    }
+
+    // Determine effective UID/GID
+    const uid = jail_config.runtime.uid orelse
+        if (jail_config.isolation.user or jail_config.namespace_fds.user != null) 0
+        else linux.getuid();
+    const gid = jail_config.runtime.gid orelse
+        if (jail_config.isolation.user or jail_config.namespace_fds.user != null) 0
+        else linux.getgid();
+
+    // Apply security context (setuid/setgid, capabilities, seccomp, etc.)
+    try process_exec.prepare(
+        allocator,
+        uid,
+        gid,
+        jail_config.process,
+        jail_config.security,
+        jail_config.namespace_fds
+    );
+
+    // Set hostname if in UTS namespace
+    if (jail_config.isolation.uts or jail_config.namespace_fds.uts != null) {
+        const hostname = jail_config.runtime.hostname orelse jail_config.name;
+        try checkErr(
+            linux.syscall2(.sethostname, @intFromPtr(hostname.ptr), hostname.len),
+            error.SetHostnameFailed
+        );
+    }
+
+    // Setup filesystem isolation
+    var fs = Fs.init(jail_config.rootfs_path, instance_id, jail_config.fs_actions);
+    try fs.setup(jail_config.isolation.mount, jail_config.runtime.use_pivot_root);
+
+    // Change directory if specified
+    if (jail_config.process.chdir) |target| {
+        std.posix.chdir(target) catch return error.ChdirFailed;
+    }
+
+    // Setup network interface if in network namespace
+    if (jail_config.isolation.net and jail_config.namespace_fds.net == null) {
+        var net = try Network.init(allocator, instance_id);
+        defer net.deinit() catch {};
+        try net.setupContainerVethIf();
+    }
+
+    // Finalize namespace attachments (user2 if provided)
+    try process_exec.finalizeNamespaces(jail_config.namespace_fds);
+
+    // Isolation complete - caller can now exec
+}
+
+// Helper function for decoding wait status (used by applyIsolationInChild)
+fn decodeWaitStatus(status_bits: u32) !u8 {
+    const c = @cImport({
+        @cInclude("sys/wait.h");
+    });
+    const status = @as(c_int, @bitCast(status_bits));
+    if (c.WIFEXITED(status)) {
+        return @intCast(c.WEXITSTATUS(status));
+    }
+    if (c.WIFSIGNALED(status)) {
+        const sig = c.WTERMSIG(status);
+        return @intCast((128 + sig) & 0xff);
+    }
+    return error.WaitFailed;
+}
+
 fn build_shell_cmd(shell_config: ShellConfig, allocator: std.mem.Allocator) ![]const []const u8 {
     const count = 1 + shell_config.shell_args.len;
     var cmd = try allocator.alloc([]const u8, count);

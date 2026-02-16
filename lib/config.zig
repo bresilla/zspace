@@ -150,6 +150,7 @@ pub const RuntimeOptions = struct {
     hostname: ?[]const u8 = null,
     as_pid_1: bool = false,
     fail_on_runtime_warnings: bool = false,
+    use_pivot_root: bool = true,
 };
 
 pub const StatusOptions = struct {

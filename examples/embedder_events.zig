@@ -9,6 +9,7 @@ const EventState = struct {
 fn onEvent(ctx: ?*anyopaque, event: voidbox.StatusEvent) !void {
     const state: *EventState = @ptrCast(@alignCast(ctx.?));
     switch (event.kind) {
+        .runtime_init_warnings => {},
         .spawned => state.spawned += 1,
         .setup_finished => {},
         .exited => state.exited += 1,

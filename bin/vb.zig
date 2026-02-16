@@ -273,6 +273,14 @@ fn parseBwrapArgs(allocator: std.mem.Allocator, raw: []const []const u8) !Parsed
             cfg.runtime.hostname = try nextArg(args, &i, arg);
             continue;
         }
+        if (std.mem.eql(u8, arg, "--pivot-root")) {
+            cfg.runtime.use_pivot_root = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--no-pivot-root") or std.mem.eql(u8, arg, "--chroot")) {
+            cfg.runtime.use_pivot_root = false;
+            continue;
+        }
 
         if (std.mem.eql(u8, arg, "--argv0")) {
             cfg.process.argv0 = try nextArg(args, &i, arg);
@@ -832,7 +840,10 @@ fn printUsage() !void {
     try out.print("  {s}--unshare-all{s}\n", .{ option, reset });
     try out.print("  {s}--userns{s} FD | {s}--userns2{s} FD | {s}--pidns{s} FD\n", .{ option, reset, option, reset, option, reset });
     try out.print("  {s}--netns{s} FD | {s}--mntns{s} FD | {s}--utsns{s} FD | {s}--ipcns{s} FD\n", .{ option, reset, option, reset, option, reset, option, reset });
-    try out.print("  {s}--uid{s} UID | {s}--gid{s} GID | {s}--hostname{s} HOST\n\n", .{ option, reset, option, reset, option, reset });
+    try out.print("  {s}--uid{s} UID | {s}--gid{s} GID | {s}--hostname{s} HOST\n", .{ option, reset, option, reset, option, reset });
+    try out.print("  {s}--pivot-root{s}            Use pivot_root for root isolation (default, more secure)\n", .{ option, reset });
+    try out.print("  {s}--no-pivot-root{s}         Use chroot for root isolation (legacy compatibility)\n", .{ option, reset });
+    try out.print("  {s}--chroot{s}                Alias for --no-pivot-root\n\n", .{ option, reset });
 
     try out.print("{s}Process And Env{s}\n", .{ section, reset });
     try out.print("  {s}--chdir{s} DIR\n", .{ option, reset });

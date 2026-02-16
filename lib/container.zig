@@ -203,7 +203,7 @@ fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t, setup_ready_fd:
     try process_exec.prepare(self.allocator, uid, gid, self.process, self.security, self.namespace_fds);
 
     try self.sethostname();
-    try self.fs.setup(self.isolation.mount);
+    try self.fs.setup(self.isolation.mount, self.runtime.use_pivot_root);
     if (self.process.chdir) |target| {
         std.posix.chdir(target) catch return error.ChdirFailed;
     }
@@ -393,7 +393,7 @@ pub fn deinit(self: *Container) void {
     self.allocator.free(self.instance_id);
 }
 
-fn makeInstanceId(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+pub fn makeInstanceId(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
     const now_i128 = std.time.nanoTimestamp();
     const now: u64 = @truncate(@as(u128, @bitCast(now_i128)));
     const pid: u64 = @intCast(linux.getpid());
