@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.0.5] - 2026-02-16
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Correct order for user namespace mappings
+
 ## [0.0.3] - 2026-02-15
 
 ### <!-- 0 -->⛰️  Features

@@ -58,19 +58,26 @@ pub fn writeUserRootMappings(allocator: std.mem.Allocator, pid: linux.pid_t) !vo
     const uid_line = try std.fmt.bufPrint(&uid_buf, "0 {} 1\n", .{uid});
     const gid_line = try std.fmt.bufPrint(&gid_buf, "0 {} 1\n", .{gid});
 
-    const uid_map = try std.fs.openFileAbsolute(uidmap_path, .{ .mode = .write_only });
-    defer uid_map.close();
-
+    // Step 1: MUST write to setgroups FIRST (required by kernel before gid_map)
+    // This disables setgroups() in the user namespace for security
     if (std.fs.openFileAbsolute(setgroups_path, .{ .mode = .write_only })) |setgroups_file| {
         defer setgroups_file.close();
         _ = setgroups_file.write("deny\n") catch {};
     } else |_| {}
 
-    const gid_map = try std.fs.openFileAbsolute(gidmap_path, .{ .mode = .write_only });
-    defer gid_map.close();
+    // Step 2: Write uid_map (map root in namespace to current user outside)
+    {
+        const uid_map = try std.fs.openFileAbsolute(uidmap_path, .{ .mode = .write_only });
+        defer uid_map.close();
+        _ = try uid_map.write(uid_line);
+    }
 
-    _ = try uid_map.write(uid_line);
-    _ = try gid_map.write(gid_line);
+    // Step 3: Write gid_map (must come AFTER setgroups and uid_map)
+    {
+        const gid_map = try std.fs.openFileAbsolute(gidmap_path, .{ .mode = .write_only });
+        defer gid_map.close();
+        _ = try gid_map.write(gid_line);
+    }
 }
 
 pub fn assertUserNsDisabled() !void {
