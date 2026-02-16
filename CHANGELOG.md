@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.0.6] - 2026-02-16
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Implement user namespace creation and mapping
+
 ## [0.0.5] - 2026-02-16
 
 ### <!-- 1 -->🐛 Bug Fixes
