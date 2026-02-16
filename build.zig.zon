@@ -1,6 +1,6 @@
 .{
     .name = .voidbox,
-    .version = "0.0.3",
+    .version = "0.0.4",
     .paths = .{
         "build.zig",
         "build.zig.zon",

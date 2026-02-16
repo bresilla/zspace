@@ -12,8 +12,8 @@ pub fn init(rootfs: []const u8, instance_id: []const u8, actions: []const FsActi
     return .{ .rootfs = rootfs, .instance_id = instance_id, .actions = actions };
 }
 
-pub fn setup(self: *Fs, mount_fs: bool) !void {
-    try mounts.enterRoot(self.rootfs);
+pub fn setup(self: *Fs, mount_fs: bool, use_pivot_root: bool) !void {
+    try mounts.enterRoot(self.rootfs, use_pivot_root);
 
     if (!mount_fs) return;
 

@@ -79,6 +79,32 @@ pub fn build(b: *std.Build) !void {
         .root_module = ex_events_module,
     });
 
+    const ex_pty_module = b.createModule(.{
+        .root_source_file = b.path("examples/embedder_pty_isolation.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    ex_pty_module.addImport("voidbox", voidbox_module);
+
+    const ex_pty = b.addExecutable(.{
+        .name = "example_embedder_pty_isolation",
+        .root_module = ex_pty_module,
+    });
+
+    const ex_showcase_module = b.createModule(.{
+        .root_source_file = b.path("examples/embedder_isolation_showcase.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    ex_showcase_module.addImport("voidbox", voidbox_module);
+
+    const ex_showcase = b.addExecutable(.{
+        .name = "example_embedder_isolation_showcase",
+        .root_module = ex_showcase_module,
+    });
+
     const vb_module = b.createModule(.{
         .root_source_file = b.path("bin/vb.zig"),
         .target = target,
@@ -105,4 +131,6 @@ pub fn build(b: *std.Build) !void {
     const examples_step = b.step("examples", "Compile embedder examples");
     examples_step.dependOn(&ex_shell.step);
     examples_step.dependOn(&ex_events.step);
+    examples_step.dependOn(&ex_pty.step);
+    examples_step.dependOn(&ex_showcase.step);
 }

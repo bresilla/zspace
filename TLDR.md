@@ -216,6 +216,137 @@ Hardening highlights:
 
 ---
 
+## 9.1) Root Filesystem Isolation: chroot vs pivot_root
+
+voidbox supports two mechanisms for changing the root filesystem:
+
+### pivot_root (Default, Recommended)
+
+**What it does:**
+- Fully switches the mount namespace's root filesystem
+- Unmounts and detaches the old root completely
+- Provides strongest isolation - old root is inaccessible after pivot
+
+**When to use:**
+- Production containers (default behavior)
+- When maximum security is required
+- Modern container runtimes (Docker, Podman use this)
+
+**Configuration:**
+```zig
+.runtime = .{ .use_pivot_root = true }  // default
+```
+
+**CLI:**
+```bash
+vb --pivot-root --rootfs /my-rootfs -- /bin/sh  # explicit
+vb --rootfs /my-rootfs -- /bin/sh               # default
+```
+
+### chroot (Legacy)
+
+**What it does:**
+- Changes root directory for the process tree
+- Old root remains accessible via file descriptors
+- Simpler but less secure
+
+**When to use:**
+- Nested containers (pivot_root may fail inside containers)
+- Debugging scenarios
+- Legacy compatibility
+
+**Configuration:**
+```zig
+.runtime = .{ .use_pivot_root = false }
+```
+
+**CLI:**
+```bash
+vb --no-pivot-root --rootfs /my-rootfs -- /bin/sh
+vb --chroot --rootfs /my-rootfs -- /bin/sh         # alias
+```
+
+### Security Comparison
+
+| Feature | chroot | pivot_root |
+|---------|--------|------------|
+| Old root accessible | Yes (via FDs) | No (unmounted) |
+| Escape prevention | Weak | Strong |
+| Used by Docker | No | Yes |
+| Kernel requirement | Any | Mount namespace |
+
+**Recommendation:** Always use pivot_root unless you have a specific reason not to.
+
+---
+
+## 9.2) Advanced API: applyIsolationInChild()
+
+For advanced use cases where you need to fork yourself (e.g., PTY setup), use the decoupled isolation API:
+
+### Overview
+
+```zig
+const pid = try std.posix.fork();
+if (pid == 0) {
+    // Child: setup PTY or other custom pre-isolation setup
+    try myCustomSetup();
+
+    // Apply voidbox isolation in already-forked child
+    try voidbox.applyIsolationInChild(config, allocator);
+
+    // Exec command
+    try std.posix.execveZ(...);
+}
+// Parent: continues...
+```
+
+### Use Cases
+
+- PTY setup before isolation (terminal emulators, shells like Hexe)
+- Custom FD inheritance patterns
+- Advanced IPC setup before namespace isolation
+- Any scenario requiring fork control before isolation
+
+### What it Does
+
+`applyIsolationInChild()` applies the following in order:
+
+1. Namespace attachments (if `namespace_fds` provided)
+2. PID namespace setup (handles second fork if needed)
+3. Security context (uid/gid, capabilities, seccomp, no_new_privs)
+4. Hostname (if in UTS namespace)
+5. Filesystem isolation (pivot_root/chroot + fs_actions)
+6. Network interface setup (if in network namespace)
+7. Final namespace attachments (user2 if provided)
+
+### What it Does NOT Do
+
+- Does NOT fork - you control the fork
+- Does NOT exec - you call exec after isolation returns
+- Does NOT setup user namespace mappings - parent must handle this
+
+### Prerequisites
+
+- Must be called in child process after fork
+- Parent must write user namespace mappings (uid_map/gid_map) if using user namespaces
+- Caller responsible for exec after this returns
+
+### Example
+
+See `examples/embedder_pty_isolation.zig` for a complete working example.
+
+### Comparison with Normal API
+
+| Aspect | `launch()`/`spawn()` | `applyIsolationInChild()` |
+|--------|---------------------|---------------------------|
+| Fork control | voidbox forks | Caller forks |
+| Exec control | voidbox execs | Caller execs |
+| User ns mapping | Automatic | Manual (parent responsibility) |
+| PTY support | No | Yes |
+| Simplicity | Simple | Advanced |
+
+---
+
 ## 10) PID1 Mode Notes
 
 Current PID1 behavior includes:
