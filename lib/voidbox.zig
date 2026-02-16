@@ -484,6 +484,18 @@ pub fn applyIsolationInChild(jail_config: JailConfig, allocator: std.mem.Allocat
             const line = try std.fmt.bufPrint(&buf, "0 {} 1\n", .{gid});
             _ = try gid_map.write(line);
         }
+
+        // Step 4: CRITICAL - Switch to UID 0 inside namespace
+        // Without this, process stays as uid=65534 (nobody)!
+        try std.posix.setregid(0, 0);
+        try std.posix.setreuid(0, 0);
+
+        // Verify it worked
+        const new_uid = linux.getuid();
+        const new_gid = linux.getgid();
+        if (new_uid != 0 or new_gid != 0) {
+            return error.UserNamespaceSetupFailed;
+        }
     }
 
     // Create other namespaces if needed (after user namespace)
