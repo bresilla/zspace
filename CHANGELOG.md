@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.0.7] - 2026-02-16
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Set UID/GID to 0 inside new user namespace
+
 ## [0.0.6] - 2026-02-16
 
 ### <!-- 1 -->🐛 Bug Fixes
