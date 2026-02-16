@@ -88,6 +88,7 @@ pub const LaunchError = errors.LaunchError;
 pub const DoctorError = errors.DoctorError;
 
 pub const Session = session_api.Session;
+pub const namespace = @import("namespace.zig");
 
 pub fn launch(jail_config: JailConfig, allocator: std.mem.Allocator) LaunchError!RunOutcome {
     var session = try spawn(jail_config, allocator);
@@ -438,7 +439,23 @@ pub fn wait(session: *Session) WaitError!RunOutcome {
 ///   }
 ///   // Parent continues...
 ///
+/// Pipe fds for parent-child coordination of user namespace uid_map writing.
+/// Required on kernels with apparmor_restrict_unprivileged_userns=1 (Ubuntu 24.04+).
+///
+/// Protocol (like bubblewrap):
+///   1. Child: unshare(all flags combined) → writes 1 byte to ready_fd
+///   2. Parent: reads ready_fd → writes uid_map/gid_map → writes 1 byte to done_fd
+///   3. Child: reads done_fd → setreuid(0,0) → continues with isolation setup
+pub const UsernsSync = struct {
+    ready_fd: std.posix.fd_t,
+    done_fd: std.posix.fd_t,
+};
+
 pub fn applyIsolationInChild(jail_config: JailConfig, allocator: std.mem.Allocator) !void {
+    return applyIsolationInChildSync(jail_config, allocator, null);
+}
+
+pub fn applyIsolationInChildSync(jail_config: JailConfig, allocator: std.mem.Allocator, userns_sync: ?UsernsSync) !void {
     const Container = @import("container.zig");
     const Fs = @import("fs.zig");
     const Network = @import("network.zig");
@@ -451,63 +468,96 @@ pub fn applyIsolationInChild(jail_config: JailConfig, allocator: std.mem.Allocat
     const instance_id = try Container.makeInstanceId(allocator, jail_config.name);
     defer allocator.free(instance_id);
 
-    // Create user namespace first if needed (must be before other namespaces)
-    if (jail_config.isolation.user and jail_config.namespace_fds.user == null) {
-        // Get real UID/GID BEFORE creating namespace
-        const uid = linux.getuid();
-        const gid = linux.getgid();
+    const needs_user_ns = jail_config.isolation.user and jail_config.namespace_fds.user == null;
 
-        try checkErr(linux.unshare(linux.CLONE.NEWUSER), error.UnshareUserNsFailed);
+    if (userns_sync) |sync| {
+        // Parent-coordinated mode (bubblewrap-style):
+        // Combine ALL namespace flags into a single unshare() call, then let
+        // the parent write uid_map/gid_map from outside the namespace.
+        var flags: u32 = 0;
+        if (needs_user_ns) flags |= linux.CLONE.NEWUSER;
+        if (jail_config.isolation.mount and jail_config.namespace_fds.mount == null) flags |= linux.CLONE.NEWNS;
+        if (jail_config.isolation.net and jail_config.namespace_fds.net == null) flags |= linux.CLONE.NEWNET;
+        if (jail_config.isolation.pid and jail_config.namespace_fds.pid == null) flags |= linux.CLONE.NEWPID;
+        if (jail_config.isolation.uts and jail_config.namespace_fds.uts == null) flags |= linux.CLONE.NEWUTS;
+        if (jail_config.isolation.ipc and jail_config.namespace_fds.ipc == null) flags |= linux.CLONE.NEWIPC;
+        if (jail_config.isolation.cgroup and jail_config.namespace_fds.mount == null) flags |= linux.CLONE.NEWCGROUP;
 
-        // Write uid/gid mappings from inside the namespace (use "self" not pid)
-
-        // Step 1: Disable setgroups
-        if (std.fs.openFileAbsolute("/proc/self/setgroups", .{ .mode = .write_only })) |f| {
-            defer f.close();
-            _ = f.write("deny\n") catch {};
-        } else |_| {}
-
-        // Step 2: Write uid_map
-        {
-            const uid_map = try std.fs.openFileAbsolute("/proc/self/uid_map", .{ .mode = .write_only });
-            defer uid_map.close();
-            var buf: [64]u8 = undefined;
-            const line = try std.fmt.bufPrint(&buf, "0 {} 1\n", .{uid});
-            _ = try uid_map.write(line);
+        if (flags != 0) {
+            try checkErr(linux.unshare(flags), error.UnshareNsFailed);
         }
 
-        // Step 3: Write gid_map
-        {
-            const gid_map = try std.fs.openFileAbsolute("/proc/self/gid_map", .{ .mode = .write_only });
-            defer gid_map.close();
-            var buf: [64]u8 = undefined;
-            const line = try std.fmt.bufPrint(&buf, "0 {} 1\n", .{gid});
-            _ = try gid_map.write(line);
+        if (needs_user_ns) {
+            // Signal parent: "namespaces created, write uid_map now"
+            _ = try std.posix.write(sync.ready_fd, &[_]u8{1});
+            std.posix.close(sync.ready_fd);
+
+            // Wait for parent: "uid_map written, continue"
+            var buf: [1]u8 = undefined;
+            _ = try std.posix.read(sync.done_fd, &buf);
+            std.posix.close(sync.done_fd);
+
+            // Switch to uid 0 inside namespace
+            try std.posix.setregid(0, 0);
+            try std.posix.setreuid(0, 0);
+        } else {
+            std.posix.close(sync.ready_fd);
+            std.posix.close(sync.done_fd);
+        }
+    } else {
+        // Child-only mode (works on permissive kernels without AppArmor userns restrictions)
+        if (needs_user_ns) {
+            const uid = linux.getuid();
+            const gid = linux.getgid();
+
+            try checkErr(linux.unshare(linux.CLONE.NEWUSER), error.UnshareUserNsFailed);
+
+            if (std.fs.openFileAbsolute("/proc/self/setgroups", .{ .mode = .write_only })) |f| {
+                defer f.close();
+                _ = f.write("deny\n") catch {};
+            } else |_| {}
+
+            {
+                const uid_map = try std.fs.openFileAbsolute("/proc/self/uid_map", .{ .mode = .write_only });
+                defer uid_map.close();
+                var buf: [64]u8 = undefined;
+                const line = try std.fmt.bufPrint(&buf, "0 {} 1\n", .{uid});
+                _ = try uid_map.write(line);
+            }
+            {
+                const gid_map = try std.fs.openFileAbsolute("/proc/self/gid_map", .{ .mode = .write_only });
+                defer gid_map.close();
+                var buf: [64]u8 = undefined;
+                const line = try std.fmt.bufPrint(&buf, "0 {} 1\n", .{gid});
+                _ = try gid_map.write(line);
+            }
+
+            try std.posix.setregid(0, 0);
+            try std.posix.setreuid(0, 0);
         }
 
-        // Step 4: CRITICAL - Switch to UID 0 inside namespace
-        // Without this, process stays as uid=65534 (nobody)!
-        try std.posix.setregid(0, 0);
-        try std.posix.setreuid(0, 0);
+        // Create other namespaces separately
+        var unshare_flags: u32 = 0;
+        if (jail_config.isolation.mount and jail_config.namespace_fds.mount == null) unshare_flags |= linux.CLONE.NEWNS;
+        if (jail_config.isolation.net and jail_config.namespace_fds.net == null) unshare_flags |= linux.CLONE.NEWNET;
+        if (jail_config.isolation.uts and jail_config.namespace_fds.uts == null) unshare_flags |= linux.CLONE.NEWUTS;
+        if (jail_config.isolation.ipc and jail_config.namespace_fds.ipc == null) unshare_flags |= linux.CLONE.NEWIPC;
+        if (jail_config.isolation.cgroup and jail_config.namespace_fds.mount == null) unshare_flags |= linux.CLONE.NEWCGROUP;
+        if (jail_config.isolation.pid and jail_config.namespace_fds.pid == null) unshare_flags |= linux.CLONE.NEWPID;
 
-        // Verify it worked
-        const new_uid = linux.getuid();
-        const new_gid = linux.getgid();
-        if (new_uid != 0 or new_gid != 0) {
-            return error.UserNamespaceSetupFailed;
+        if (unshare_flags != 0) {
+            try checkErr(linux.unshare(unshare_flags), error.UnshareNsFailed);
         }
     }
 
-    // Create other namespaces if needed (after user namespace)
-    var unshare_flags: u32 = 0;
-    if (jail_config.isolation.mount and jail_config.namespace_fds.mount == null) unshare_flags |= linux.CLONE.NEWNS;
-    if (jail_config.isolation.net and jail_config.namespace_fds.net == null) unshare_flags |= linux.CLONE.NEWNET;
-    if (jail_config.isolation.uts and jail_config.namespace_fds.uts == null) unshare_flags |= linux.CLONE.NEWUTS;
-    if (jail_config.isolation.ipc and jail_config.namespace_fds.ipc == null) unshare_flags |= linux.CLONE.NEWIPC;
-    if (jail_config.isolation.cgroup and jail_config.namespace_fds.mount == null) unshare_flags |= linux.CLONE.NEWCGROUP;
-
-    if (unshare_flags != 0) {
-        try checkErr(linux.unshare(unshare_flags), error.UnshareNsFailed);
+    // PID namespace requires a second fork - the child becomes PID 1
+    if (jail_config.isolation.pid and jail_config.namespace_fds.pid == null) {
+        const pid = try std.posix.fork();
+        if (pid != 0) {
+            const wait_res = std.posix.waitpid(pid, 0);
+            const code = decodeWaitStatus(wait_res.status) catch 127;
+            std.posix.exit(code);
+        }
     }
 
     // Attach to existing namespaces if provided
@@ -520,23 +570,20 @@ pub fn applyIsolationInChild(jail_config: JailConfig, allocator: std.mem.Allocat
         try namespace_sequence.attachInitial(jail_config.namespace_fds);
     }
 
-    // Handle PID namespace if needed
+    // Handle PID namespace attachment (joining existing namespace)
     if (jail_config.namespace_fds.pid != null) {
         try namespace_sequence.preparePidNamespace(
             jail_config.namespace_fds.pid.?,
             jail_config.isolation.pid
         );
 
-        // If pid namespace setup requires a second fork, do it
         if (jail_config.isolation.pid) {
             const pid = try std.posix.fork();
             if (pid != 0) {
-                // Parent of second fork - wait for child
                 const wait_res = std.posix.waitpid(pid, 0);
                 const code = decodeWaitStatus(wait_res.status) catch 127;
                 std.posix.exit(code);
             }
-            // Continue in grandchild
         }
     }
 
@@ -585,8 +632,6 @@ pub fn applyIsolationInChild(jail_config: JailConfig, allocator: std.mem.Allocat
 
     // Finalize namespace attachments (user2 if provided)
     try process_exec.finalizeNamespaces(jail_config.namespace_fds);
-
-    // Isolation complete - caller can now exec
 }
 
 // Helper function for decoding wait status (used by applyIsolationInChild)
