@@ -68,6 +68,14 @@ See in-source docs at `lib/voidbox.zig` for embedder examples:
 - launch shell config
 - event callback wiring
 
+## Rootfs Mode Note (Parity)
+
+- Bubblewrap-style behavior in voidbox uses `pivot_root` (default).
+- `chroot` remains available only as an explicit voidbox extension via
+  `.runtime.use_pivot_root = false`.
+- `chroot` mode is less isolated than `pivot_root` and is not considered
+  bubblewrap parity behavior.
+
 ## Current Hardening Status
 
 Recent work focused on:

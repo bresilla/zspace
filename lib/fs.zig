@@ -29,8 +29,8 @@ pub fn setup(self: *Fs, mount_fs: bool, use_pivot_root: bool) !void {
     // This is how bubblewrap achieves filesystem isolation without a pre-built rootfs.
     const is_host_root = std.mem.eql(u8, self.rootfs, "/");
 
-    if (is_host_root and self.actions.len > 0) {
-        try mounts.makeRootPrivate();
+    if (is_host_root) {
+        try mounts.makeRootSlave();
 
         // Create tmpfs new root
         const newroot = try std.fmt.allocPrint(
@@ -47,7 +47,9 @@ pub fn setup(self: *Fs, mount_fs: bool, use_pivot_root: bool) !void {
         }
         try mountTmpfs(newroot);
 
-        // Execute fs_actions with destinations inside the new root
+        // Execute fs_actions with destinations inside the new root.
+        // This is always run for host-root mode, including empty action lists,
+        // to keep rootfs semantics strict and isolated.
         try fs_actions.executePrefixed(self.instance_id, self.actions, newroot);
 
         // pivot_root to the new root
@@ -55,6 +57,7 @@ pub fn setup(self: *Fs, mount_fs: bool, use_pivot_root: bool) !void {
         return;
     }
 
+    try mounts.makeRootSlave();
     try mounts.enterRoot(self.rootfs, use_pivot_root);
     try mounts.makeRootPrivate();
 
@@ -65,7 +68,7 @@ pub fn setup(self: *Fs, mount_fs: bool, use_pivot_root: bool) !void {
 
 fn mountTmpfs(dest: []const u8) !void {
     var dest_z = try std.posix.toPosixPath(dest);
-    try checkErr(linux.mount("tmpfs", &dest_z, "tmpfs", 0, 0), error.MountTmpFs);
+    try checkErr(linux.mount("tmpfs", &dest_z, "tmpfs", linux.MS.NOSUID | linux.MS.NODEV, 0), error.MountTmpFs);
 }
 
 pub fn cleanupRuntimeArtifacts(self: *Fs) void {
