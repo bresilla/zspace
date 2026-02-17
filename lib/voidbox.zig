@@ -192,6 +192,9 @@ pub fn validate(jail_config: JailConfig) ValidationError!void {
     for (jail_config.process.set_env) |entry| {
         if (entry.key.len == 0) return error.InvalidSetEnvKey;
     }
+    for (jail_config.process.inherit_fds) |fd| {
+        if (fd < 3) return error.InvalidInheritedFd;
+    }
     if (jail_config.status.json_status_fd) |fd| {
         if (fd < 0) return error.InvalidStatusFd;
     }
@@ -572,10 +575,7 @@ pub fn applyIsolationInChildSync(jail_config: JailConfig, allocator: std.mem.All
 
     // Handle PID namespace attachment (joining existing namespace)
     if (jail_config.namespace_fds.pid != null) {
-        try namespace_sequence.preparePidNamespace(
-            jail_config.namespace_fds.pid.?,
-            jail_config.isolation.pid
-        );
+        try namespace_sequence.preparePidNamespace(jail_config.namespace_fds.pid.?, jail_config.isolation.pid);
 
         if (jail_config.isolation.pid) {
             const pid = try std.posix.fork();
@@ -589,29 +589,17 @@ pub fn applyIsolationInChildSync(jail_config: JailConfig, allocator: std.mem.All
 
     // Determine effective UID/GID
     const uid = jail_config.runtime.uid orelse
-        if (jail_config.isolation.user or jail_config.namespace_fds.user != null) 0
-        else linux.getuid();
+        if (jail_config.isolation.user or jail_config.namespace_fds.user != null) 0 else linux.getuid();
     const gid = jail_config.runtime.gid orelse
-        if (jail_config.isolation.user or jail_config.namespace_fds.user != null) 0
-        else linux.getgid();
+        if (jail_config.isolation.user or jail_config.namespace_fds.user != null) 0 else linux.getgid();
 
     // Apply security context (setuid/setgid, capabilities, seccomp, etc.)
-    try process_exec.prepare(
-        allocator,
-        uid,
-        gid,
-        jail_config.process,
-        jail_config.security,
-        jail_config.namespace_fds
-    );
+    try process_exec.prepare(uid, gid, jail_config.process, jail_config.security, jail_config.namespace_fds);
 
     // Set hostname if in UTS namespace
     if (jail_config.isolation.uts or jail_config.namespace_fds.uts != null) {
         const hostname = jail_config.runtime.hostname orelse jail_config.name;
-        try checkErr(
-            linux.syscall2(.sethostname, @intFromPtr(hostname.ptr), hostname.len),
-            error.SetHostnameFailed
-        );
+        try checkErr(linux.syscall2(.sethostname, @intFromPtr(hostname.ptr), hostname.len), error.SetHostnameFailed);
     }
 
     // Setup filesystem isolation
@@ -632,6 +620,11 @@ pub fn applyIsolationInChildSync(jail_config: JailConfig, allocator: std.mem.All
 
     // Finalize namespace attachments (user2 if provided)
     try process_exec.finalizeNamespaces(jail_config.namespace_fds);
+    try process_exec.enforceUserNsPolicy(jail_config.security, allocator);
+
+    // Apply seccomp as a final hardening step, right before returning to caller
+    // for exec.
+    try process_exec.applySeccomp(jail_config.security, allocator);
 }
 
 // Helper function for decoding wait status (used by applyIsolationInChild)
@@ -841,6 +834,28 @@ test "validate rejects invalid sync fd" {
     };
 
     try std.testing.expectError(error.InvalidSyncFd, validate(cfg));
+}
+
+test "validate rejects invalid inherited fd" {
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .process = .{ .inherit_fds = &.{2} },
+    };
+
+    try std.testing.expectError(error.InvalidInheritedFd, validate(cfg));
+}
+
+test "validate accepts explicit inherited fd allowlist" {
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .process = .{ .inherit_fds = &.{ 3, 9 } },
+    };
+
+    try validate(cfg);
 }
 
 test "validate rejects invalid namespace fd" {
@@ -1679,6 +1694,378 @@ test "integration launch supports pid namespace as_pid_1 mode" {
             .cgroup = false,
         },
         .runtime = .{ .as_pid_1 = true },
+    };
+
+    const outcome = launch(cfg, std.testing.allocator) catch |err| switch (err) {
+        error.SpawnFailed => return error.SkipZigTest,
+        else => return err,
+    };
+    try std.testing.expectEqual(@as(u8, 0), outcome.exit_code);
+}
+
+test "integration mount namespace root is not shared" {
+    if (!integrationTestsEnabled()) return error.SkipZigTest;
+
+    const cfg: JailConfig = .{
+        .name = "itest-mount-propagation-not-shared",
+        .rootfs_path = "/",
+        .cmd = &.{
+            "/bin/sh",
+            "-c",
+            "awk '$5==\"/\"{ if (index($0, \" shared:\")>0) exit 1; else exit 0 } END{exit 1}' /proc/self/mountinfo",
+        },
+        .isolation = .{
+            .user = false,
+            .net = false,
+            .mount = true,
+            .pid = false,
+            .uts = false,
+            .ipc = false,
+            .cgroup = false,
+        },
+    };
+
+    const outcome = launch(cfg, std.testing.allocator) catch |err| switch (err) {
+        error.SpawnFailed => return error.SkipZigTest,
+        else => return err,
+    };
+    try std.testing.expectEqual(@as(u8, 0), outcome.exit_code);
+}
+
+test "integration mount namespace root omits shared propagation tag with fs setup" {
+    if (!integrationTestsEnabled()) return error.SkipZigTest;
+
+    const cfg: JailConfig = .{
+        .name = "itest-mount-propagation-fs-setup",
+        .rootfs_path = "/",
+        .cmd = &.{
+            "/bin/sh",
+            "-c",
+            "awk '$5==\"/\"{ if (index($0, \" shared:\")>0) exit 1; else exit 0 } END{exit 1}' /proc/self/mountinfo",
+        },
+        .isolation = .{
+            .user = false,
+            .net = false,
+            .mount = true,
+            .pid = false,
+            .uts = false,
+            .ipc = false,
+            .cgroup = false,
+        },
+        .fs_actions = &.{.{ .tmpfs = .{ .dest = "/tmp", .mode = 0o1777 } }},
+    };
+
+    const outcome = launch(cfg, std.testing.allocator) catch |err| switch (err) {
+        error.SpawnFailed => return error.SkipZigTest,
+        else => return err,
+    };
+    try std.testing.expectEqual(@as(u8, 0), outcome.exit_code);
+}
+
+test "integration tmp-overlay base path is hidden from child" {
+    if (!integrationTestsEnabled()) return error.SkipZigTest;
+
+    const cfg: JailConfig = .{
+        .name = "itest-tmp-overlay-hidden",
+        .rootfs_path = "/",
+        .cmd = &.{
+            "/bin/sh",
+            "-c",
+            "[ -e /tmp/ov-target ] && [ ! -e /tmp/.voidbox-tmp-overlay ]",
+        },
+        .isolation = .{
+            .user = false,
+            .net = false,
+            .mount = true,
+            .pid = false,
+            .uts = false,
+            .ipc = false,
+            .cgroup = false,
+        },
+        .fs_actions = &.{
+            .{ .overlay_src = .{ .key = "base", .path = "/" } },
+            .{ .tmp_overlay = .{ .source_key = "base", .dest = "/tmp/ov-target" } },
+        },
+    };
+
+    const outcome = launch(cfg, std.testing.allocator) catch |err| switch (err) {
+        error.SpawnFailed => return error.SkipZigTest,
+        else => return err,
+    };
+    try std.testing.expectEqual(@as(u8, 0), outcome.exit_code);
+}
+
+test "integration bind mount hardening applies nosuid and nodev" {
+    if (!integrationTestsEnabled()) return error.SkipZigTest;
+
+    const cfg: JailConfig = .{
+        .name = "itest-bind-hardening",
+        .rootfs_path = "/",
+        .cmd = &.{
+            "/bin/sh",
+            "-c",
+            "awk '$5==\"/mnt\"{found=1; if($6 ~ /(^|,)nosuid(,|$)/ && $6 ~ /(^|,)nodev(,|$)/) ok=1} END{exit (found&&ok)?0:1}' /proc/self/mountinfo",
+        },
+        .isolation = .{
+            .user = false,
+            .net = false,
+            .mount = true,
+            .pid = false,
+            .uts = false,
+            .ipc = false,
+            .cgroup = false,
+        },
+        .fs_actions = &.{
+            .{ .proc = "/proc" },
+            .{ .dev = "/dev" },
+            .{ .ro_bind_try = .{ .src = "/bin", .dest = "/bin" } },
+            .{ .ro_bind_try = .{ .src = "/usr", .dest = "/usr" } },
+            .{ .ro_bind_try = .{ .src = "/lib", .dest = "/lib" } },
+            .{ .ro_bind_try = .{ .src = "/lib64", .dest = "/lib64" } },
+            .{ .ro_bind_try = .{ .src = "/nix", .dest = "/nix" } },
+            .{ .ro_bind_try = .{ .src = "/etc", .dest = "/etc" } },
+            .{ .bind = .{ .src = "/tmp", .dest = "/mnt" } },
+        },
+    };
+
+    const outcome = launch(cfg, std.testing.allocator) catch |err| switch (err) {
+        error.SpawnFailed => return error.SkipZigTest,
+        else => return err,
+    };
+    try std.testing.expectEqual(@as(u8, 0), outcome.exit_code);
+}
+
+test "integration ro-bind hardening applies ro nosuid and nodev" {
+    if (!integrationTestsEnabled()) return error.SkipZigTest;
+
+    const cfg: JailConfig = .{
+        .name = "itest-ro-bind-hardening",
+        .rootfs_path = "/",
+        .cmd = &.{
+            "/bin/sh",
+            "-c",
+            "awk '$5==\"/romnt\"{found=1; if($6 ~ /(^|,)ro(,|$)/ && $6 ~ /(^|,)nosuid(,|$)/ && $6 ~ /(^|,)nodev(,|$)/) ok=1} END{exit (found&&ok)?0:1}' /proc/self/mountinfo",
+        },
+        .isolation = .{
+            .user = false,
+            .net = false,
+            .mount = true,
+            .pid = false,
+            .uts = false,
+            .ipc = false,
+            .cgroup = false,
+        },
+        .fs_actions = &.{
+            .{ .proc = "/proc" },
+            .{ .dev = "/dev" },
+            .{ .ro_bind_try = .{ .src = "/bin", .dest = "/bin" } },
+            .{ .ro_bind_try = .{ .src = "/usr", .dest = "/usr" } },
+            .{ .ro_bind_try = .{ .src = "/lib", .dest = "/lib" } },
+            .{ .ro_bind_try = .{ .src = "/lib64", .dest = "/lib64" } },
+            .{ .ro_bind_try = .{ .src = "/nix", .dest = "/nix" } },
+            .{ .ro_bind_try = .{ .src = "/etc", .dest = "/etc" } },
+            .{ .ro_bind = .{ .src = "/tmp", .dest = "/romnt" } },
+        },
+    };
+
+    const outcome = launch(cfg, std.testing.allocator) catch |err| switch (err) {
+        error.SpawnFailed => return error.SkipZigTest,
+        else => return err,
+    };
+    try std.testing.expectEqual(@as(u8, 0), outcome.exit_code);
+}
+
+test "integration recursive bind hardening applies to nested submounts" {
+    if (!integrationTestsEnabled()) return error.SkipZigTest;
+
+    const cfg: JailConfig = .{
+        .name = "itest-recursive-bind-submount-hardening",
+        .rootfs_path = "/",
+        .cmd = &.{
+            "/bin/sh",
+            "-c",
+            "awk '$5==\"/hostdev/pts\"{found=1; if($6 ~ /(^|,)nosuid(,|$)/ && $6 ~ /(^|,)nodev(,|$)/) ok=1} END{exit (found&&ok)?0:77}' /proc/self/mountinfo",
+        },
+        .isolation = .{
+            .user = false,
+            .net = false,
+            .mount = true,
+            .pid = false,
+            .uts = false,
+            .ipc = false,
+            .cgroup = false,
+        },
+        .fs_actions = &.{
+            .{ .proc = "/proc" },
+            .{ .dev = "/dev" },
+            .{ .ro_bind_try = .{ .src = "/bin", .dest = "/bin" } },
+            .{ .ro_bind_try = .{ .src = "/usr", .dest = "/usr" } },
+            .{ .ro_bind_try = .{ .src = "/lib", .dest = "/lib" } },
+            .{ .ro_bind_try = .{ .src = "/lib64", .dest = "/lib64" } },
+            .{ .ro_bind_try = .{ .src = "/nix", .dest = "/nix" } },
+            .{ .ro_bind_try = .{ .src = "/etc", .dest = "/etc" } },
+            .{ .bind = .{ .src = "/dev", .dest = "/hostdev" } },
+        },
+    };
+
+    const outcome = launch(cfg, std.testing.allocator) catch |err| switch (err) {
+        error.SpawnFailed => return error.SkipZigTest,
+        else => return err,
+    };
+    if (outcome.exit_code == 77) return error.SkipZigTest;
+    try std.testing.expectEqual(@as(u8, 0), outcome.exit_code);
+}
+
+test "integration recursive bind hardening covers hostdev shm when present" {
+    if (!integrationTestsEnabled()) return error.SkipZigTest;
+
+    const cfg: JailConfig = .{
+        .name = "itest-recursive-bind-shm-hardening",
+        .rootfs_path = "/",
+        .cmd = &.{
+            "/bin/sh",
+            "-c",
+            "awk '$5==\"/hostdev/shm\"{found=1; if($6 ~ /(^|,)nosuid(,|$)/ && $6 ~ /(^|,)nodev(,|$)/) ok=1} END{exit (found&&ok)?0:77}' /proc/self/mountinfo",
+        },
+        .isolation = .{
+            .user = false,
+            .net = false,
+            .mount = true,
+            .pid = false,
+            .uts = false,
+            .ipc = false,
+            .cgroup = false,
+        },
+        .fs_actions = &.{
+            .{ .proc = "/proc" },
+            .{ .dev = "/dev" },
+            .{ .ro_bind_try = .{ .src = "/bin", .dest = "/bin" } },
+            .{ .ro_bind_try = .{ .src = "/usr", .dest = "/usr" } },
+            .{ .ro_bind_try = .{ .src = "/lib", .dest = "/lib" } },
+            .{ .ro_bind_try = .{ .src = "/lib64", .dest = "/lib64" } },
+            .{ .ro_bind_try = .{ .src = "/nix", .dest = "/nix" } },
+            .{ .ro_bind_try = .{ .src = "/etc", .dest = "/etc" } },
+            .{ .bind = .{ .src = "/dev", .dest = "/hostdev" } },
+        },
+    };
+
+    const outcome = launch(cfg, std.testing.allocator) catch |err| switch (err) {
+        error.SpawnFailed => return error.SkipZigTest,
+        else => return err,
+    };
+    if (outcome.exit_code == 77) return error.SkipZigTest;
+    try std.testing.expectEqual(@as(u8, 0), outcome.exit_code);
+}
+
+test "integration recursive bind hardening covers hostdev mqueue when present" {
+    if (!integrationTestsEnabled()) return error.SkipZigTest;
+
+    const cfg: JailConfig = .{
+        .name = "itest-recursive-bind-mqueue-hardening",
+        .rootfs_path = "/",
+        .cmd = &.{
+            "/bin/sh",
+            "-c",
+            "awk '$5==\"/hostdev/mqueue\"{found=1; if($6 ~ /(^|,)nosuid(,|$)/ && $6 ~ /(^|,)nodev(,|$)/) ok=1} END{exit (found&&ok)?0:77}' /proc/self/mountinfo",
+        },
+        .isolation = .{
+            .user = false,
+            .net = false,
+            .mount = true,
+            .pid = false,
+            .uts = false,
+            .ipc = false,
+            .cgroup = false,
+        },
+        .fs_actions = &.{
+            .{ .proc = "/proc" },
+            .{ .dev = "/dev" },
+            .{ .ro_bind_try = .{ .src = "/bin", .dest = "/bin" } },
+            .{ .ro_bind_try = .{ .src = "/usr", .dest = "/usr" } },
+            .{ .ro_bind_try = .{ .src = "/lib", .dest = "/lib" } },
+            .{ .ro_bind_try = .{ .src = "/lib64", .dest = "/lib64" } },
+            .{ .ro_bind_try = .{ .src = "/nix", .dest = "/nix" } },
+            .{ .ro_bind_try = .{ .src = "/etc", .dest = "/etc" } },
+            .{ .bind = .{ .src = "/dev", .dest = "/hostdev" } },
+        },
+    };
+
+    const outcome = launch(cfg, std.testing.allocator) catch |err| switch (err) {
+        error.SpawnFailed => return error.SkipZigTest,
+        else => return err,
+    };
+    if (outcome.exit_code == 77) return error.SkipZigTest;
+    try std.testing.expectEqual(@as(u8, 0), outcome.exit_code);
+}
+
+test "integration recursive ro-bind hardening applies to nested submounts" {
+    if (!integrationTestsEnabled()) return error.SkipZigTest;
+
+    const cfg: JailConfig = .{
+        .name = "itest-recursive-ro-bind-submount-hardening",
+        .rootfs_path = "/",
+        .cmd = &.{
+            "/bin/sh",
+            "-c",
+            "awk '$5==\"/hostdev/pts\"{found=1; if($6 ~ /(^|,)ro(,|$)/ && $6 ~ /(^|,)nosuid(,|$)/ && $6 ~ /(^|,)nodev(,|$)/) ok=1} END{exit (found&&ok)?0:77}' /proc/self/mountinfo",
+        },
+        .isolation = .{
+            .user = false,
+            .net = false,
+            .mount = true,
+            .pid = false,
+            .uts = false,
+            .ipc = false,
+            .cgroup = false,
+        },
+        .fs_actions = &.{
+            .{ .proc = "/proc" },
+            .{ .dev = "/dev" },
+            .{ .ro_bind_try = .{ .src = "/bin", .dest = "/bin" } },
+            .{ .ro_bind_try = .{ .src = "/usr", .dest = "/usr" } },
+            .{ .ro_bind_try = .{ .src = "/lib", .dest = "/lib" } },
+            .{ .ro_bind_try = .{ .src = "/lib64", .dest = "/lib64" } },
+            .{ .ro_bind_try = .{ .src = "/nix", .dest = "/nix" } },
+            .{ .ro_bind_try = .{ .src = "/etc", .dest = "/etc" } },
+            .{ .ro_bind = .{ .src = "/dev", .dest = "/hostdev" } },
+        },
+    };
+
+    const outcome = launch(cfg, std.testing.allocator) catch |err| switch (err) {
+        error.SpawnFailed => return error.SkipZigTest,
+        else => return err,
+    };
+    if (outcome.exit_code == 77) return error.SkipZigTest;
+    try std.testing.expectEqual(@as(u8, 0), outcome.exit_code);
+}
+
+test "integration cwd fallback lands on root when prior cwd is unavailable" {
+    if (!integrationTestsEnabled()) return error.SkipZigTest;
+
+    const cfg: JailConfig = .{
+        .name = "itest-cwd-fallback-root",
+        .rootfs_path = "/",
+        .cmd = &.{ "/bin/sh", "-c", "pwd | grep -x /" },
+        .isolation = .{
+            .user = false,
+            .net = false,
+            .mount = true,
+            .pid = false,
+            .uts = false,
+            .ipc = false,
+            .cgroup = false,
+        },
+        .fs_actions = &.{
+            .{ .proc = "/proc" },
+            .{ .dev = "/dev" },
+            .{ .tmpfs = .{ .dest = "/tmp", .mode = 0o1777 } },
+            .{ .ro_bind_try = .{ .src = "/bin", .dest = "/bin" } },
+            .{ .ro_bind_try = .{ .src = "/usr", .dest = "/usr" } },
+            .{ .ro_bind_try = .{ .src = "/lib", .dest = "/lib" } },
+            .{ .ro_bind_try = .{ .src = "/lib64", .dest = "/lib64" } },
+            .{ .ro_bind_try = .{ .src = "/nix", .dest = "/nix" } },
+            .{ .ro_bind_try = .{ .src = "/etc", .dest = "/etc" } },
+        },
     };
 
     const outcome = launch(cfg, std.testing.allocator) catch |err| switch (err) {

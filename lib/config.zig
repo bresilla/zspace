@@ -140,6 +140,7 @@ pub const ProcessOptions = struct {
     clear_env: bool = false,
     set_env: []const EnvironmentEntry = &.{},
     unset_env: []const []const u8 = &.{},
+    inherit_fds: []const i32 = &.{},
     new_session: bool = false,
     die_with_parent: bool = false,
 };

@@ -220,6 +220,12 @@ Hardening highlights:
 
 voidbox supports two mechanisms for changing the root filesystem:
 
+Parity note:
+
+- Bubblewrap-style semantics correspond to `pivot_root` flow.
+- `chroot` is intentionally kept as a voidbox-only extension mode.
+- Treat `chroot` as a compatibility/debug tool, not as parity behavior.
+
 ### pivot_root (Default, Recommended)
 
 **What it does:**
@@ -313,11 +319,13 @@ if (pid == 0) {
 
 1. Namespace attachments (if `namespace_fds` provided)
 2. PID namespace setup (handles second fork if needed)
-3. Security context (uid/gid, capabilities, seccomp, no_new_privs)
+3. Security context pre-exec setup (uid/gid, capabilities, no_new_privs)
 4. Hostname (if in UTS namespace)
 5. Filesystem isolation (pivot_root/chroot + fs_actions)
 6. Network interface setup (if in network namespace)
 7. Final namespace attachments (user2 if provided)
+8. User namespace policy enforcement (`disable_userns` / assertion)
+9. Late seccomp application (immediately before caller exec)
 
 ### What it Does NOT Do
 

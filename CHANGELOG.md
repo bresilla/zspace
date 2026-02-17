@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.0.9] - 2026-02-17
+
+### <!-- 0 -->⛰️  Features
+
+- Enhance security and filesystem isolation
+
 ## [0.0.8] - 2026-02-16
 
 ### <!-- 0 -->⛰️  Features

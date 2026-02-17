@@ -105,8 +105,8 @@ pub fn spawn(self: *Container) !linux.pid_t {
         .uid = self.runtime.uid orelse if (self.isolation.user or self.namespace_fds.user != null) 0 else linux.getuid(),
         .gid = self.runtime.gid orelse if (self.isolation.user or self.namespace_fds.user != null) 0 else linux.getgid(),
     };
-    try checkErr(linux.pipe(&childp_args.pipe), error.Pipe);
-    checkErr(linux.pipe(&childp_args.setup_pipe), error.Pipe) catch |err| {
+    try checkErr(linux.pipe2(&childp_args.pipe, .{ .CLOEXEC = true }), error.Pipe);
+    checkErr(linux.pipe2(&childp_args.setup_pipe, .{ .CLOEXEC = true }), error.Pipe) catch |err| {
         _ = linux.close(childp_args.pipe[0]);
         _ = linux.close(childp_args.pipe[1]);
         return err;
@@ -200,13 +200,14 @@ pub fn wait(self: *Container, pid: linux.pid_t) !u8 {
 // initializes the container environment
 // and executes the user passed cmd
 fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t, setup_ready_fd: ?i32) !void {
-    try process_exec.prepare(self.allocator, uid, gid, self.process, self.security, self.namespace_fds);
+    const old_cwd = std.process.getCwdAlloc(self.allocator) catch null;
+    defer if (old_cwd) |cwd| self.allocator.free(cwd);
+
+    try process_exec.prepare(uid, gid, self.process, self.security, self.namespace_fds);
 
     try self.sethostname();
     try self.fs.setup(self.isolation.mount, self.runtime.use_pivot_root);
-    if (self.process.chdir) |target| {
-        std.posix.chdir(target) catch return error.ChdirFailed;
-    }
+    try applyWorkingDirectory(self.process, self.allocator, old_cwd);
     if (self.net) |*net| {
         if (self.namespace_fds.net != null) {
             // network namespace already attached; skip interface setup
@@ -216,6 +217,7 @@ fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t, setup_ready_fd:
     }
 
     try process_exec.finalizeNamespaces(self.namespace_fds);
+    try process_exec.enforceUserNsPolicy(self.security, self.allocator);
 
     if (setup_ready_fd) |fd| {
         const one = [_]u8{1};
@@ -230,6 +232,7 @@ fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t, setup_ready_fd:
         _ = linux.close(fd);
     }
 
+    try process_exec.applySeccomp(self.security, self.allocator);
     try process_exec.exec(self.allocator, self.cmd, self.process);
 }
 
@@ -246,6 +249,32 @@ fn readOneByte(fd: i32, out: *[1]u8) !usize {
 
 fn writeOneByte(fd: i32, data: *const [1]u8) !usize {
     return std.posix.write(fd, data);
+}
+
+fn applyWorkingDirectory(process: ProcessOptions, allocator: std.mem.Allocator, old_cwd: ?[]const u8) !void {
+    if (process.chdir) |target| {
+        std.posix.chdir(target) catch return error.ChdirFailed;
+        return;
+    }
+
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => null,
+        else => return err,
+    };
+    defer if (home) |path| allocator.free(path);
+
+    const candidates = workingDirectoryCandidates(old_cwd, home);
+    for (candidates) |candidate| {
+        const path = candidate orelse continue;
+        std.posix.chdir(path) catch continue;
+        return;
+    }
+
+    return error.ChdirFailed;
+}
+
+fn workingDirectoryCandidates(old_cwd: ?[]const u8, home: ?[]const u8) [3]?[]const u8 {
+    return .{ old_cwd, home, "/" };
 }
 
 export fn childFn(a: usize) u8 {
@@ -462,4 +491,18 @@ test "killAndReapChild terminates child process" {
 
     killAndReapChild(pid);
     try std.testing.expectError(error.ProcessNotFound, std.posix.kill(pid, 0));
+}
+
+test "workingDirectoryCandidates prioritizes old cwd then home then root" {
+    const candidates = workingDirectoryCandidates("/old", "/home/test");
+    try std.testing.expectEqualStrings("/old", candidates[0].?);
+    try std.testing.expectEqualStrings("/home/test", candidates[1].?);
+    try std.testing.expectEqualStrings("/", candidates[2].?);
+}
+
+test "workingDirectoryCandidates keeps root fallback when inputs missing" {
+    const candidates = workingDirectoryCandidates(null, null);
+    try std.testing.expect(candidates[0] == null);
+    try std.testing.expect(candidates[1] == null);
+    try std.testing.expectEqualStrings("/", candidates[2].?);
 }

@@ -6,6 +6,10 @@ pub fn makeRootPrivate() !void {
     try checkErr(linux.mount(null, "/", null, linux.MS.REC | linux.MS.PRIVATE, 0), error.MountPrivate);
 }
 
+pub fn makeRootSlave() !void {
+    try checkErr(linux.mount(null, "/", null, linux.MS.REC | linux.MS.SLAVE, 0), error.MountPrivate);
+}
+
 pub fn enterRoot(rootfs: []const u8, use_pivot: bool) !void {
     if (use_pivot) {
         try pivotRoot(rootfs);
@@ -32,10 +36,7 @@ pub fn pivotRoot(rootfs: []const u8) !void {
     const rootfs_z = try std.posix.toPosixPath(rootfs);
 
     // 1. Bind mount rootfs to itself to ensure it's a mount point
-    try checkErr(
-        linux.mount(&rootfs_z, &rootfs_z, null, linux.MS.BIND | linux.MS.REC, 0),
-        error.BindMount
-    );
+    try checkErr(linux.mount(&rootfs_z, &rootfs_z, null, linux.MS.BIND | linux.MS.REC, 0), error.BindMount);
 
     // 2. Change to new root directory
     try checkErr(linux.chdir(&rootfs_z), error.Chdir);
@@ -45,11 +46,12 @@ pub fn pivotRoot(rootfs: []const u8) !void {
     const dot = [_:0]u8{'.'};
     try pivotRootSyscall(&dot, &dot);
 
+    // Ensure the old-root stack is private before detach so unmounts do not
+    // propagate back outside the sandbox namespace.
+    try checkErr(linux.mount(&dot, &dot, null, linux.MS.REC | linux.MS.PRIVATE, 0), error.MountPrivate);
+
     // 4. Unmount old root (now stacked at /)
-    try checkErr(
-        linux.umount2(&dot, linux.MNT.DETACH),
-        error.UnmountOldRoot
-    );
+    try checkErr(linux.umount2(&dot, linux.MNT.DETACH), error.UnmountOldRoot);
 
     // 5. Change to actual root
     const slash = [_:0]u8{'/'};

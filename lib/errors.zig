@@ -11,6 +11,7 @@ pub const ValidationError = error{
     FsActionsRequireMountNamespace,
     InvalidUnsetEnvKey,
     InvalidSetEnvKey,
+    InvalidInheritedFd,
     InvalidStatusFd,
     InvalidSyncFd,
     InvalidBlockFd,

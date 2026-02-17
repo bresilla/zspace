@@ -43,6 +43,30 @@ pub fn attach(namespace_fds: NamespaceFds) !void {
 }
 
 pub fn writeUserRootMappings(allocator: std.mem.Allocator, pid: linux.pid_t) !void {
+    try writeUserMappings(allocator, pid, 0, linux.getuid(), 0, linux.getgid());
+}
+
+pub fn disableFurtherUserNamespaces(allocator: std.mem.Allocator) !void {
+    const outer_uid = linux.getuid();
+    const outer_gid = linux.getgid();
+
+    try writeFileAbsolute("/proc/sys/user/max_user_namespaces", "1\n");
+    checkErr(linux.unshare(linux.CLONE.NEWUSER), error.UnshareFailed) catch return error.UserNsNotDisabled;
+    try writeUserMappings(allocator, linux.getpid(), 0, outer_uid, 0, outer_gid);
+
+    // Refresh identity in the new user namespace mapping.
+    try checkErr(linux.setregid(0, 0), error.GID);
+    try checkErr(linux.setreuid(0, 0), error.UID);
+}
+
+fn writeUserMappings(
+    allocator: std.mem.Allocator,
+    pid: linux.pid_t,
+    inside_uid: linux.uid_t,
+    outside_uid: linux.uid_t,
+    inside_gid: linux.gid_t,
+    outside_gid: linux.gid_t,
+) !void {
     const uidmap_path = try std.fmt.allocPrint(allocator, "/proc/{}/uid_map", .{pid});
     defer allocator.free(uidmap_path);
     const gidmap_path = try std.fmt.allocPrint(allocator, "/proc/{}/gid_map", .{pid});
@@ -50,13 +74,10 @@ pub fn writeUserRootMappings(allocator: std.mem.Allocator, pid: linux.pid_t) !vo
     const setgroups_path = try std.fmt.allocPrint(allocator, "/proc/{}/setgroups", .{pid});
     defer allocator.free(setgroups_path);
 
-    const uid = linux.getuid();
-    const gid = linux.getgid();
-
     var uid_buf: [64]u8 = undefined;
     var gid_buf: [64]u8 = undefined;
-    const uid_line = try std.fmt.bufPrint(&uid_buf, "0 {} 1\n", .{uid});
-    const gid_line = try std.fmt.bufPrint(&gid_buf, "0 {} 1\n", .{gid});
+    const uid_line = try std.fmt.bufPrint(&uid_buf, "{} {} 1\n", .{ inside_uid, outside_uid });
+    const gid_line = try std.fmt.bufPrint(&gid_buf, "{} {} 1\n", .{ inside_gid, outside_gid });
 
     // Step 1: MUST write to setgroups FIRST (required by kernel before gid_map)
     // This disables setgroups() in the user namespace for security
@@ -78,6 +99,12 @@ pub fn writeUserRootMappings(allocator: std.mem.Allocator, pid: linux.pid_t) !vo
         defer gid_map.close();
         _ = try gid_map.write(gid_line);
     }
+}
+
+fn writeFileAbsolute(path: []const u8, content: []const u8) !void {
+    const file = try std.fs.openFileAbsolute(path, .{ .mode = .write_only });
+    defer file.close();
+    _ = try file.write(content);
 }
 
 pub fn assertUserNsDisabled() !void {

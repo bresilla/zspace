@@ -12,13 +12,14 @@ const SecurityOptions = @import("config.zig").SecurityOptions;
 const NamespaceFds = @import("config.zig").NamespaceFds;
 
 pub fn prepare(
-    allocator: std.mem.Allocator,
     uid: linux.uid_t,
     gid: linux.gid_t,
     process: ProcessOptions,
     security: SecurityOptions,
     namespace_fds: NamespaceFds,
 ) !void {
+    try namespace_sequence.attachInitial(namespace_fds);
+
     if (linux.getgid() != gid) {
         try checkErr(linux.setregid(gid, gid), error.GID);
     }
@@ -26,13 +27,7 @@ pub fn prepare(
         try checkErr(linux.setreuid(uid, uid), error.UID);
     }
 
-    try namespace_sequence.attachInitial(namespace_fds);
-
-    if (security.disable_userns or security.assert_userns_disabled) {
-        try namespace.assertUserNsDisabled();
-    }
-
-    if (process.new_session and !std.posix.isatty(std.posix.STDIN_FILENO)) {
+    if (process.new_session) {
         _ = std.posix.setsid() catch return error.SetSidFailed;
     }
     if (process.die_with_parent) {
@@ -43,6 +38,18 @@ pub fn prepare(
     }
 
     try caps.apply(security);
+}
+
+pub fn enforceUserNsPolicy(security: SecurityOptions, allocator: std.mem.Allocator) !void {
+    if (security.disable_userns) {
+        try namespace.disableFurtherUserNamespaces(allocator);
+    }
+    if (security.disable_userns or security.assert_userns_disabled) {
+        try namespace.assertUserNsDisabled();
+    }
+}
+
+pub fn applySeccomp(security: SecurityOptions, allocator: std.mem.Allocator) !void {
     try seccomp.apply(security, allocator);
 }
 
@@ -81,6 +88,11 @@ pub fn exec(
         try env_map.put(entry.key, entry.value);
     }
 
+    var cwd_buf: [std.posix.PATH_MAX]u8 = undefined;
+    if (std.posix.getcwd(&cwd_buf)) |cwd| {
+        try env_map.put("PWD", cwd);
+    } else |_| {}
+
     var arena_allocator = std.heap.ArenaAllocator.init(allocator);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
@@ -93,5 +105,39 @@ pub fn exec(
 
     const envp_buf = try std.process.createNullDelimitedEnvMap(arena, &env_map);
 
+    closeExtraFds(process.inherit_fds);
+
     std.posix.execvpeZ_expandArg0(.no_expand, file_z, argv_buf.ptr, envp_buf.ptr) catch return error.CmdFailed;
+}
+
+fn closeExtraFds(inherit_fds: []const i32) void {
+    const first_fd: usize = 3;
+
+    if (inherit_fds.len == 0) {
+        const max_fd: usize = std.math.maxInt(u32);
+        const close_range_result = linux.syscall3(.close_range, first_fd, max_fd, 0);
+        const signed: isize = @bitCast(close_range_result);
+        if (!(signed < 0 and signed > -4096)) return;
+
+        const err_code: linux.E = @enumFromInt(@as(usize, @intCast(-signed)));
+        if (err_code != .NOSYS and err_code != .INVAL) return;
+    }
+
+    var fd: usize = first_fd;
+    while (fd < 65536) : (fd += 1) {
+        if (shouldInheritFd(@intCast(fd), inherit_fds)) continue;
+        std.posix.close(@intCast(fd));
+    }
+}
+
+fn shouldInheritFd(fd: i32, inherit_fds: []const i32) bool {
+    for (inherit_fds) |keep| {
+        if (fd == keep) return true;
+    }
+    return false;
+}
+
+test "shouldInheritFd returns true for allowlisted descriptors" {
+    try std.testing.expect(shouldInheritFd(5, &.{ 5, 7 }));
+    try std.testing.expect(!shouldInheritFd(6, &.{ 5, 7 }));
 }
