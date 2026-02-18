@@ -64,6 +64,11 @@ pub const StatusNamespaceIds = config.StatusOptions.NamespaceIds;
 pub const StatusEventCallback = config.StatusOptions.EventCallback;
 pub const EnvironmentEntry = config.EnvironmentEntry;
 pub const LaunchProfile = config.LaunchProfile;
+pub const LandlockAccess = config.LandlockAccess;
+pub const LandlockFsRule = config.LandlockFsRule;
+pub const LandlockNetAccess = config.LandlockNetAccess;
+pub const LandlockNetRule = config.LandlockNetRule;
+pub const LandlockOptions = config.LandlockOptions;
 pub const FsAction = config.FsAction;
 pub const MountPair = config.MountPair;
 pub const TmpfsMount = config.TmpfsMount;
@@ -89,6 +94,7 @@ pub const DoctorError = errors.DoctorError;
 
 pub const Session = session_api.Session;
 pub const namespace = @import("namespace.zig");
+pub const landlock = @import("landlock.zig");
 
 pub fn launch(jail_config: JailConfig, allocator: std.mem.Allocator) LaunchError!RunOutcome {
     var session = try spawn(jail_config, allocator);
@@ -245,6 +251,18 @@ pub fn validate(jail_config: JailConfig) ValidationError!void {
     }
     if ((jail_config.security.seccomp_mode == .strict or has_filters) and !jail_config.security.no_new_privs) {
         return error.SeccompRequiresNoNewPrivs;
+    }
+
+    if (jail_config.security.landlock.enabled) {
+        if (!jail_config.security.no_new_privs) {
+            return error.LandlockRequiresNoNewPrivs;
+        }
+        for (jail_config.security.landlock.fs_rules) |rule| {
+            if (rule.path.len == 0) return error.LandlockEmptyPath;
+        }
+        for (jail_config.security.landlock.net_rules) |rule| {
+            if (rule.port == 0) return error.LandlockInvalidPort;
+        }
     }
 
     for (jail_config.fs_actions) |action| {
@@ -621,6 +639,9 @@ pub fn applyIsolationInChildSync(jail_config: JailConfig, allocator: std.mem.All
     // Finalize namespace attachments (user2 if provided)
     try process_exec.finalizeNamespaces(jail_config.namespace_fds);
     try process_exec.enforceUserNsPolicy(jail_config.security, allocator);
+
+    // Apply landlock restrictions before seccomp (after all setup is complete).
+    try process_exec.applyLandlock(jail_config.security);
 
     // Apply seccomp as a final hardening step, right before returning to caller
     // for exec.
@@ -1160,6 +1181,88 @@ test "validate rejects duplicate overlay source keys" {
     };
 
     try std.testing.expectError(error.DuplicateOverlaySourceKey, validate(cfg));
+}
+
+test "validate rejects landlock with no_new_privs disabled" {
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .security = .{
+            .no_new_privs = false,
+            .landlock = .{
+                .enabled = true,
+                .fs_rules = &.{.{ .path = "/usr", .access = .read }},
+            },
+        },
+    };
+
+    try std.testing.expectError(error.LandlockRequiresNoNewPrivs, validate(cfg));
+}
+
+test "validate rejects landlock rule with empty path" {
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .security = .{
+            .landlock = .{
+                .enabled = true,
+                .fs_rules = &.{.{ .path = "", .access = .read }},
+            },
+        },
+    };
+
+    try std.testing.expectError(error.LandlockEmptyPath, validate(cfg));
+}
+
+test "validate rejects landlock net rule with port zero" {
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .security = .{
+            .landlock = .{
+                .enabled = true,
+                .net_rules = &.{.{ .port = 0, .access = .bind }},
+            },
+        },
+    };
+
+    try std.testing.expectError(error.LandlockInvalidPort, validate(cfg));
+}
+
+test "validate accepts valid landlock config" {
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .security = .{
+            .landlock = .{
+                .enabled = true,
+                .fs_rules = &.{
+                    .{ .path = "/usr", .access = .read },
+                    .{ .path = "/tmp", .access = .read_write },
+                },
+            },
+        },
+    };
+
+    try validate(cfg);
+}
+
+test "validate skips landlock checks when disabled" {
+    const cfg: JailConfig = .{
+        .name = "test",
+        .rootfs_path = "/tmp/rootfs",
+        .cmd = &.{"/bin/sh"},
+        .security = .{
+            .no_new_privs = false,
+            .landlock = .{ .enabled = false },
+        },
+    };
+
+    try validate(cfg);
 }
 
 test "public API compile-time surface" {
@@ -2065,6 +2168,129 @@ test "integration cwd fallback lands on root when prior cwd is unavailable" {
             .{ .ro_bind_try = .{ .src = "/lib64", .dest = "/lib64" } },
             .{ .ro_bind_try = .{ .src = "/nix", .dest = "/nix" } },
             .{ .ro_bind_try = .{ .src = "/etc", .dest = "/etc" } },
+        },
+    };
+
+    const outcome = launch(cfg, std.testing.allocator) catch |err| switch (err) {
+        error.SpawnFailed => return error.SkipZigTest,
+        else => return err,
+    };
+    try std.testing.expectEqual(@as(u8, 0), outcome.exit_code);
+}
+
+test "integration landlock restricts file access" {
+    if (!integrationTestsEnabled()) return error.SkipZigTest;
+
+    // Allow read to /usr only; trying to read /etc should fail
+    const cfg: JailConfig = .{
+        .name = "itest-landlock-restrict",
+        .rootfs_path = "/",
+        .cmd = &.{ "/bin/sh", "-c", "cat /etc/hostname >/dev/null 2>&1 && exit 1 || exit 0" },
+        .isolation = .{
+            .user = false,
+            .net = false,
+            .mount = false,
+            .pid = false,
+            .uts = false,
+            .ipc = false,
+            .cgroup = false,
+        },
+        .security = .{
+            .landlock = .{
+                .enabled = true,
+                .fs_rules = &.{
+                    .{ .path = "/usr", .access = .read, .try_ = true },
+                    .{ .path = "/lib", .access = .read, .try_ = true },
+                    .{ .path = "/lib64", .access = .read, .try_ = true },
+                    .{ .path = "/bin", .access = .read, .try_ = true },
+                    .{ .path = "/dev", .access = .read_write },
+                    .{ .path = "/nix", .access = .read, .try_ = true },
+                    .{ .path = "/proc", .access = .read },
+                    .{ .path = "/run", .access = .read, .try_ = true },
+                },
+            },
+        },
+    };
+
+    const outcome = launch(cfg, std.testing.allocator) catch |err| switch (err) {
+        error.SpawnFailed => return error.SkipZigTest,
+        else => return err,
+    };
+    try std.testing.expectEqual(@as(u8, 0), outcome.exit_code);
+}
+
+test "integration landlock allows permitted access" {
+    if (!integrationTestsEnabled()) return error.SkipZigTest;
+
+    const cfg: JailConfig = .{
+        .name = "itest-landlock-allow",
+        .rootfs_path = "/",
+        .cmd = &.{ "/bin/sh", "-c", "cat /etc/hostname >/dev/null 2>&1" },
+        .isolation = .{
+            .user = false,
+            .net = false,
+            .mount = false,
+            .pid = false,
+            .uts = false,
+            .ipc = false,
+            .cgroup = false,
+        },
+        .security = .{
+            .landlock = .{
+                .enabled = true,
+                .fs_rules = &.{
+                    .{ .path = "/usr", .access = .read, .try_ = true },
+                    .{ .path = "/etc", .access = .read },
+                    .{ .path = "/lib", .access = .read, .try_ = true },
+                    .{ .path = "/lib64", .access = .read, .try_ = true },
+                    .{ .path = "/bin", .access = .read, .try_ = true },
+                    .{ .path = "/dev", .access = .read_write },
+                    .{ .path = "/nix", .access = .read, .try_ = true },
+                    .{ .path = "/proc", .access = .read },
+                    .{ .path = "/run", .access = .read, .try_ = true },
+                },
+            },
+        },
+    };
+
+    const outcome = launch(cfg, std.testing.allocator) catch |err| switch (err) {
+        error.SpawnFailed => return error.SkipZigTest,
+        else => return err,
+    };
+    try std.testing.expectEqual(@as(u8, 0), outcome.exit_code);
+}
+
+test "integration landlock blocks write to read-only path" {
+    if (!integrationTestsEnabled()) return error.SkipZigTest;
+
+    const cfg: JailConfig = .{
+        .name = "itest-landlock-ro",
+        .rootfs_path = "/",
+        .cmd = &.{ "/bin/sh", "-c", "touch /tmp/landlock-test 2>/dev/null && exit 1 || exit 0" },
+        .isolation = .{
+            .user = false,
+            .net = false,
+            .mount = false,
+            .pid = false,
+            .uts = false,
+            .ipc = false,
+            .cgroup = false,
+        },
+        .security = .{
+            .landlock = .{
+                .enabled = true,
+                .fs_rules = &.{
+                    .{ .path = "/usr", .access = .read, .try_ = true },
+                    .{ .path = "/tmp", .access = .read },
+                    .{ .path = "/lib", .access = .read, .try_ = true },
+                    .{ .path = "/lib64", .access = .read, .try_ = true },
+                    .{ .path = "/bin", .access = .read, .try_ = true },
+                    .{ .path = "/dev", .access = .read_write },
+                    .{ .path = "/nix", .access = .read, .try_ = true },
+                    .{ .path = "/proc", .access = .read },
+                    .{ .path = "/run", .access = .read, .try_ = true },
+                },
+            },
         },
     };
 

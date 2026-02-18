@@ -84,6 +84,7 @@ fn initNetwork(self: *Container) !void {
 }
 
 fn sethostname(self: *Container) !void {
+    if (!self.isolation.uts and self.runtime.hostname == null) return;
     const value = self.runtime.hostname orelse self.name;
     try checkErr(linux.syscall2(.sethostname, @intFromPtr(value.ptr), value.len), error.SetHostnameFailed);
 }
@@ -232,6 +233,7 @@ fn execCmd(self: *Container, uid: linux.uid_t, gid: linux.gid_t, setup_ready_fd:
         _ = linux.close(fd);
     }
 
+    try process_exec.applyLandlock(self.security);
     try process_exec.applySeccomp(self.security, self.allocator);
     try process_exec.exec(self.allocator, self.cmd, self.process);
 }
